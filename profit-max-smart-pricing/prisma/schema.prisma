@@ -5,30 +5,269 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Shopify session storage (required by @shopify/shopify-app-session-storage-prisma)
+// ---------------------------------------------------------------------------
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Merchants
+// PK is the Shopify shop domain (e.g. "my-store.myshopify.com")
+// ---------------------------------------------------------------------------
+model Merchants {
+  MerchantId          String    @id
+  ShopifyAccessToken  String
+  InstalledAt         DateTime
+  PlanTier            String?
+  IsActive            Boolean   @default(true)
+
+  // Relations
+  experimentInputs    ExperimentMerchantInputs[]
+  productSnapshots    ExperimentMerchantProductSnapshot[]
+  experimentSetups    ExperimentSetup[]
+  experimentsLive     ExperimentLive[]
+  experimentSubsets   ExperimentSubsets[]
+  impressions         Impressions[]
+  purchases           Purchases[]
+  banditParameters    BanditParameters[]
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentMerchantInputs
+// One row per (merchant, experiment, product/variant, parameter)
+// ---------------------------------------------------------------------------
+model ExperimentMerchantInputs {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  VariantId                   String
+  ExperimentParameter         String
+  ExperimentParameterValue    String
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentMerchantProductSnapshot
+// Point-in-time snapshot of Shopify product/variant data at experiment submission
+// ---------------------------------------------------------------------------
+model ExperimentMerchantProductSnapshot {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  ProductTitle                String
+  ProductStatus               String
+  VariantId                   String
+  VariantTitle                String
+  VariantPrice                Decimal
+  VariantCompareAtPrice       Decimal?
+  VariantInventoryQuantity    Int?
+  VariantInventoryPolicy      String
+  VariantSKU                  String?
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentSetup
+// One row per price variant created for an experiment
+// ---------------------------------------------------------------------------
+model ExperimentSetup {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  BaseVariantId               String
+  ExperimentVariantId         String
+  ExperimentSubset            String?
+  Price                       Decimal
+  Probability                 Decimal
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentLive
+// Current status of an active experiment
+// ---------------------------------------------------------------------------
+model ExperimentLive {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  Status                      String
+  LastUpdatedAt               DateTime
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentSubsets
+// Defines contextual subsets (e.g. region, device) for an experiment
+// ---------------------------------------------------------------------------
+model ExperimentSubsets {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  Subset                      String
+  SubsetParameter             String
+  SubsetParameterValue        String
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// Impressions
+// One row per product page view served during an experiment
+// ---------------------------------------------------------------------------
+model Impressions {
+  Id                          Int      @id @default(autoincrement())
+  CookieId                    String
+  SessionId                   String
+  Datetime                    DateTime
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  ExperimentVariantId         String
+  ExperimentSubset            String?
+  Price                       Decimal
+  Currency                    String
+  Market                      String?
+  Country                     String?
+  DeviceType                  String
+  TrafficSource               String?
+  ReferrerURL                 String?
+  UserAgent                   String?
+  IsNewVisitor                Boolean
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([CookieId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// Purchases
+// One row per completed purchase tied to an experiment impression
+// OrderId is unique to prevent duplicate webhook processing
+// ---------------------------------------------------------------------------
+model Purchases {
+  Id                          Int      @id @default(autoincrement())
+  CookieId                    String?
+  SessionId                   String?
+  Datetime                    DateTime
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  ExperimentVariantId         String
+  ExperimentSubset            String?
+  Price                       Decimal
+  Currency                    String
+  Market                      String?
+  Country                     String?
+  DeviceType                  String?
+  TrafficSource               String?
+  OrderId                     String   @unique
+  OrderValue                  Decimal
+  IsFirstPurchase             Boolean
+  DiscountApplied             Boolean
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([CookieId])
+  @@index([ExperimentDatetimeSubmitted])
+  // OrderId already indexed via @unique
+}
+
+// ---------------------------------------------------------------------------
+// BanditParameters
+// Current Thompson Sampling parameters for each (merchant, experiment, variant, subset)
+// ---------------------------------------------------------------------------
+model BanditParameters {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  ExperimentVariantId         String
+  ExperimentSubset            String?
+  Price                       Decimal
+  ContextualParameter         String
+  ContextualParameterMean     Decimal
+  ContextualParameterVariance Decimal
+  TotalImpressions            Int
+  TotalPurchases              Int
+  ModelVersion                Int      @default(0)
+  DatetimeUpdated             DateTime
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// BanditParametersHistory
+// Append-only audit log of BanditParameters updates
+// No FK on MerchantId — history is write-once and survives merchant deletion
+// ---------------------------------------------------------------------------
+model BanditParametersHistory {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ExperimentDatetimeSubmitted DateTime
+  ProductId                   String
+  ExperimentVariantId         String
+  ExperimentSubset            String?
+  Price                       Decimal
+  ContextualParameter         String
+  ContextualParameterMean     Decimal
+  ContextualParameterVariance Decimal
+  TotalImpressions            Int
+  TotalPurchases              Int
+  ModelVersion                Int
+  DatetimeUpdated             DateTime
+
+  @@index([MerchantId])
+  @@index([ExperimentDatetimeSubmitted])
 }
