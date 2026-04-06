@@ -13,5 +13,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
+  // Mark merchant as inactive rather than deleting — preserves experiment history.
+  await db.merchants.updateMany({
+    where: { MerchantId: shop },
+    data: { IsActive: false },
+  });
+
   return new Response();
 };

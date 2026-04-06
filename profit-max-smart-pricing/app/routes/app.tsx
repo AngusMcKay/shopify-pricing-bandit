@@ -4,9 +4,26 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+
+  // Upsert merchant on every authenticated load — idempotent, handles
+  // first install (create) and subsequent logins / token refreshes (update).
+  await db.merchants.upsert({
+    where: { MerchantId: session.shop },
+    create: {
+      MerchantId: session.shop,
+      ShopifyAccessToken: session.accessToken ?? "",
+      InstalledAt: new Date(),
+      IsActive: true,
+    },
+    update: {
+      ShopifyAccessToken: session.accessToken ?? "",
+      IsActive: true,
+    },
+  });
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
