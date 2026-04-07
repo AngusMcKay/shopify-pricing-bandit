@@ -130,6 +130,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
+  // Validate that the ExperimentVariantId belongs to an active experiment.
+  // Stale JS snippets on the storefront may send impressions for experiments
+  // that have since completed or been cancelled — accept silently without writing.
+  const activeSetup = await db.experimentSetup.findFirst({
+    where: {
+      MerchantId: body.MerchantId,
+      ExperimentVariantId: body.ExperimentVariantId,
+      ExperimentDatetimeSubmitted: {
+        in: await db.experimentLive
+          .findMany({
+            where: { MerchantId: body.MerchantId, Status: "Active" },
+            select: { ExperimentDatetimeSubmitted: true },
+          })
+          .then((rows) => rows.map((r) => r.ExperimentDatetimeSubmitted)),
+      },
+    },
+    select: { Id: true },
+  });
+
+  if (!activeSetup) {
+    // No active experiment for this variant — drop silently.
+    return Response.json({ success: true }, { status: 200 });
+  }
+
   // Derive IsNewVisitor — true if no prior impression exists for this CookieId
   const priorImpression = await db.impressions.findFirst({
     where: { CookieId: body.CookieId },

@@ -5,6 +5,15 @@ import { authenticate } from "../shopify.server";
 // GraphQL types (minimal — only the fields we use)
 // ---------------------------------------------------------------------------
 
+interface UnitCost {
+  amount: string;
+  currencyCode: string;
+}
+
+interface InventoryItem {
+  unitCost: UnitCost | null;
+}
+
 interface VariantNode {
   id: string;
   title: string;
@@ -13,6 +22,7 @@ interface VariantNode {
   inventoryQuantity: number | null;
   inventoryPolicy: string;
   sku: string | null;
+  inventoryItem: InventoryItem | null;
 }
 
 interface ProductNode {
@@ -65,6 +75,12 @@ const PRODUCTS_QUERY = `#graphql
                 inventoryQuantity
                 inventoryPolicy
                 sku
+                inventoryItem {
+                  unitCost {
+                    amount
+                    currencyCode
+                  }
+                }
               }
             }
             pageInfo {
@@ -99,6 +115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       inventoryQuantity: number | null;
       inventoryPolicy: string;
       sku: string | null;
+      unitCost: { amount: string; currencyCode: string } | null;
     }>;
   }> = [];
 
@@ -130,6 +147,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           inventoryQuantity: v.inventoryQuantity,
           inventoryPolicy: v.inventoryPolicy,
           sku: v.sku,
+          unitCost: v.inventoryItem?.unitCost ?? null,
         })),
       });
     }

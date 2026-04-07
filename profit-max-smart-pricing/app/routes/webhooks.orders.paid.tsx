@@ -91,11 +91,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const variantGid = toVariantGid(lineItem.variant_id);
 
-    // Find a matching experiment setup row for this merchant + variant
+    // Only attribute purchases to experiments that are currently Active.
+    // Step 1: get the datetimes of active experiments for this merchant.
+    const activeLive = await db.experimentLive.findMany({
+      where: { MerchantId: shop, Status: "Active" },
+      select: { ExperimentDatetimeSubmitted: true },
+    });
+
+    if (activeLive.length === 0) continue;
+
+    const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
+
+    // Step 2: find a matching setup row restricted to those active datetimes.
     const experimentSetup = await db.experimentSetup.findFirst({
       where: {
         MerchantId: shop,
         ExperimentVariantId: variantGid,
+        ExperimentDatetimeSubmitted: { in: activeDatetimes },
       },
       select: {
         ExperimentDatetimeSubmitted: true,
@@ -106,7 +118,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!experimentSetup) {
-      // This line item is not part of a Profit Max experiment — skip it.
+      // This line item is not part of an active Profit Max experiment — skip it.
       continue;
     }
 
