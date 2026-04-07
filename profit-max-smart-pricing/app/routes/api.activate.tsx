@@ -15,7 +15,6 @@ interface ExistingVariantNode {
   compareAtPrice: string | null;
   inventoryQuantity: number | null;
   inventoryPolicy: string;
-  tags: string[];
 }
 
 interface ExistingVariantsResponse {
@@ -100,7 +99,6 @@ const GET_PRODUCT_VARIANTS_QUERY = `#graphql
             compareAtPrice
             inventoryQuantity
             inventoryPolicy
-            tags
           }
         }
       }
@@ -138,11 +136,6 @@ const BULK_DELETE_VARIANTS_MUTATION = `#graphql
 `;
 
 // ---------------------------------------------------------------------------
-// Safety tag — added to all experiment variants to flag them
-// ---------------------------------------------------------------------------
-const EXPERIMENT_TAG = "price_test";
-
-// ---------------------------------------------------------------------------
 // Activate handler
 // ---------------------------------------------------------------------------
 
@@ -173,14 +166,17 @@ async function handleActivate(
     // Safety check — if any variant already carries the experiment tag,
     // this product already has a running experiment. Skip rather than double-enrol.
     const existingVariants = product.variants.edges.map((e) => e.node);
-    const alreadyRunning = existingVariants.some((v) =>
-      v.tags?.includes(EXPERIMENT_TAG),
-    );
+    const alreadyRunning = await db.experimentLive.findFirst({
+      where: {
+        MerchantId: merchantId,
+        ProductId: config.productId,
+        Status: "Active",
+      },
+    });
+
     if (alreadyRunning) {
       return Response.json(
-        {
-          error: `Product "${config.productId}" already has an active price experiment. Cancel it before starting a new one.`,
-        },
+        { error: `Product "${config.productId}" already has an active price experiment. Cancel it before starting a new one.` },
         { status: 409 },
       );
     }
@@ -215,12 +211,11 @@ async function handleActivate(
       throw err;
     }
 
-    // Create one Shopify variant per price point, tagged with EXPERIMENT_TAG.
+    // Create one Shopify variant per price point.
     const variantInputs = pricePoints.map((price) => ({
       price: price.toFixed(2),
-      compareAtPrice: baseVariant.price, // original price shown as "compare at"
       inventoryPolicy: baseVariant.inventoryPolicy,
-      tags: [EXPERIMENT_TAG],
+      optionValues: [{ optionName: "Title", name: price.toFixed(2) }],
       // SKU not set — experiment variants are purely for price routing
     }));
 

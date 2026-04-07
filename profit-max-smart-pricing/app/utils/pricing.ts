@@ -4,7 +4,7 @@
 // Generates a set of test price points for a multi-armed bandit experiment.
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_ALLOWED_ENDINGS = [9, 4, 0]; // last digit of the price in cents
+export const DEFAULT_ALLOWED_ENDINGS = [9]; // last digit of the price in cents
 const MIN_PRICE_GAP_RATIO = 0.02; // 2% minimum gap between adjacent points
 const MAX_PRICE_POINTS = 5;
 const MIN_PRICE_POINTS = 2;
