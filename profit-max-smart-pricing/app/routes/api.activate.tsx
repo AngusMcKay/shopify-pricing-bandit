@@ -254,22 +254,79 @@ async function handleActivate(
       );
     }
 
-    // Safety check — if any variant already carries the experiment tag,
-    // this product already has a running experiment. Skip rather than double-enrol.
     const existingVariants = product.variants.edges.map((e) => e.node);
-    const alreadyRunning = await db.experimentLive.findFirst({
+
+    // If an active experiment already exists for this product, cancel it first
+    // before starting fresh (cancel-and-replace flow).
+    const existingExperiment = await db.experimentLive.findFirst({
       where: {
         MerchantId: merchantId,
         ProductId: config.productId,
         Status: "Active",
       },
+      select: { ExperimentDatetimeSubmitted: true },
     });
 
-    if (alreadyRunning) {
-      return Response.json(
-        { error: `Product "${config.productId}" already has an active price experiment. Cancel it before starting a new one.` },
-        { status: 409 },
+    if (existingExperiment) {
+      // Fetch experiment variant IDs to remove from Shopify
+      const existingSetups = await db.experimentSetup.findMany({
+        where: {
+          MerchantId: merchantId,
+          ExperimentDatetimeSubmitted: existingExperiment.ExperimentDatetimeSubmitted,
+        },
+        select: { ExperimentVariantId: true },
+      });
+
+      const existingVariantIds = existingSetups.map((s) => s.ExperimentVariantId);
+
+      if (existingVariantIds.length > 0) {
+        const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
+          variables: { productId: config.productId, variantsIds: existingVariantIds },
+        });
+        const deleteJson = (await deleteRes.json()) as BulkDeleteResponse;
+        if (deleteJson.data.productVariantsBulkDelete.userErrors.length > 0) {
+          console.error(
+            `Shopify variant deletion errors during replace for product ${config.productId}:`,
+            deleteJson.data.productVariantsBulkDelete.userErrors,
+          );
+        }
+      }
+
+      // Remove the _pm_price option
+      const optionsRes = await admin.graphql(GET_PRODUCT_OPTIONS_QUERY, {
+        variables: { id: config.productId },
+      });
+      const optionsJson = (await optionsRes.json()) as GetProductOptionsResponse;
+      const pmPriceOption = optionsJson.data.product?.options.find(
+        (o) => o.name === "_pm_price",
       );
+
+      if (pmPriceOption) {
+        const optionsDeleteRes = await admin.graphql(PRODUCT_OPTIONS_DELETE_MUTATION, {
+          variables: { productId: config.productId, options: [pmPriceOption.id] },
+        });
+        const optionsDeleteJson = (await optionsDeleteRes.json()) as ProductOptionsDeleteResponse;
+        if (optionsDeleteJson.data.productOptionsDelete.userErrors.length > 0) {
+          console.error(
+            `Shopify option deletion errors during replace for product ${config.productId}:`,
+            optionsDeleteJson.data.productOptionsDelete.userErrors,
+          );
+        }
+      }
+
+      // Mark the existing experiment as Cancelled
+      await db.experimentLive.updateMany({
+        where: {
+          MerchantId: merchantId,
+          ProductId: config.productId,
+          ExperimentDatetimeSubmitted: existingExperiment.ExperimentDatetimeSubmitted,
+          Status: "Active",
+        },
+        data: {
+          Status: "Cancelled",
+          LastUpdatedAt: new Date(),
+        },
+      });
     }
 
     if (existingVariants.length === 0) {

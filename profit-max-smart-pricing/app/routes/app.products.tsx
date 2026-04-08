@@ -25,6 +25,7 @@ interface ProductExperimentConfig {
   costOfProduction?: number;
   regionalVariation: boolean;
   exactPricePoints: number[];
+  optimizationMode?: "revenue" | "profit";
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             : undefined,
         regionalVariation: params["RegionalVariation"] === "true",
         exactPricePoints: [],
+        optimizationMode:
+          params["OptimizationMode"] === "profit" ? "profit" : "revenue",
       });
     }
   }
@@ -293,6 +296,12 @@ function closeModal(ref: ModalRef) {
 export default function ProductsPage() {
   const { products, configs: serverConfigs } = useLoaderData<typeof loader>();
 
+  // Frozen snapshot of the server-loaded configs indexed by productId.
+  // Using a ref so it never changes as the user edits the UI.
+  const serverConfigsRef = useRef(
+    Object.fromEntries(serverConfigs.map((c) => [c.productId, c])),
+  );
+
   const initialConfigs = buildInitialConfigs(products, serverConfigs);
 
   const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
@@ -351,12 +360,40 @@ export default function ProductsPage() {
 
   const enabledProducts = products.filter((p) => configs[p.id]?.enabled);
 
+  const hasConfigChanged = (productId: string): boolean => {
+    const server = serverConfigsRef.current[productId];
+    if (!server) return true; // no active experiment — always send
+
+    const ui = configs[productId];
+    if (!ui) return false;
+
+    if (parseFloat(ui.minPrice) !== server.minPrice) return true;
+    if (parseFloat(ui.maxPrice) !== server.maxPrice) return true;
+
+    const uiCost = ui.costOfProduction !== "" ? parseFloat(ui.costOfProduction) : undefined;
+    if (uiCost !== server.costOfProduction) return true;
+
+    if (ui.regionalVariation !== server.regionalVariation) return true;
+
+    if (globalSettings.optimizationMode !== (server.optimizationMode ?? "revenue")) return true;
+
+    const uiExact = ui.exactPricePoints
+      .split(",")
+      .map((s) => parseFloat(s.trim()))
+      .filter((n) => !isNaN(n));
+    if (JSON.stringify(uiExact) !== JSON.stringify(server.exactPricePoints)) return true;
+
+    return false;
+  };
+
+  const changedProducts = enabledProducts.filter((p) => hasConfigChanged(p.id));
+
   // ---------------------------------------------------------------------------
   // Activate handler — POST to /api/activate
   // ---------------------------------------------------------------------------
 
   const handleActivateConfirm = async () => {
-    if (enabledProducts.length === 0) return;
+    if (changedProducts.length === 0) return;
 
     setActivating(true);
     setActivateResult(null);
@@ -364,7 +401,7 @@ export default function ProductsPage() {
 
     const payload = {
       action: "activate",
-      products: enabledProducts.map((p) => {
+      products: changedProducts.map((p) => {
         const config = configs[p.id];
         const exactPoints = config.exactPricePoints
           .split(",")
@@ -640,9 +677,9 @@ export default function ProductsPage() {
           <s-button
             variant="primary"
             onClick={() => openModal(activateModalRef)}
-            disabled={activating || enabledProducts.length === 0}
+            disabled={activating || changedProducts.length === 0}
           >
-            {activating ? "Processing…" : `Activate (${enabledProducts.length})`}
+            {activating ? "Processing…" : `Activate (${changedProducts.length})`}
           </s-button>
         </s-stack>
       </s-section>
@@ -834,7 +871,7 @@ export default function ProductsPage() {
             :
           </s-paragraph>
           <s-unordered-list>
-            {enabledProducts.map((p) => (
+            {changedProducts.map((p) => (
               <s-list-item key={p.id}>
                 <s-text type="strong">{p.title}</s-text>
                 <s-text type="generic">
@@ -848,9 +885,9 @@ export default function ProductsPage() {
               </s-list-item>
             ))}
           </s-unordered-list>
-          {enabledProducts.length === 0 && (
-            <s-banner tone="warning" heading="No products selected">
-              Enable at least one product before activating.
+          {changedProducts.length === 0 && (
+            <s-banner tone="warning" heading="No changes to apply">
+              All enabled products already match their active experiment config.
             </s-banner>
           )}
           {globalSettings.priceEndings.length === 0 && (
@@ -864,7 +901,7 @@ export default function ProductsPage() {
           slot="primary-action"
           variant="primary"
           onClick={handleActivateConfirm}
-          {...(enabledProducts.length === 0 || globalSettings.priceEndings.length === 0
+          {...(changedProducts.length === 0 || globalSettings.priceEndings.length === 0
             ? { disabled: true }
             : {})}
         >
