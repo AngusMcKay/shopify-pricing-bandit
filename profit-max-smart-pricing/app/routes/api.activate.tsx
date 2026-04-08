@@ -7,6 +7,11 @@ import { generatePricePoints, PricePointError } from "../utils/pricing";
 // GraphQL types
 // ---------------------------------------------------------------------------
 
+interface SelectedOption {
+  name: string;
+  value: string;
+}
+
 interface ExistingVariantNode {
   id: string;
   price: string;
@@ -15,6 +20,13 @@ interface ExistingVariantNode {
   compareAtPrice: string | null;
   inventoryQuantity: number | null;
   inventoryPolicy: string;
+  selectedOptions: SelectedOption[];
+}
+
+interface ProductOption {
+  id: string;
+  name: string;
+  values: string[];
 }
 
 interface ExistingVariantsResponse {
@@ -23,6 +35,7 @@ interface ExistingVariantsResponse {
       id: string;
       title: string;
       tags: string[];
+      options: ProductOption[];
       variants: {
         edges: Array<{ node: ExistingVariantNode }>;
       };
@@ -50,6 +63,34 @@ interface BulkDeleteResponse {
       product: { id: string } | null;
       userErrors: Array<{ field: string[]; message: string }>;
     };
+  };
+}
+
+interface ProductOptionsCreateResponse {
+  data: {
+    productOptionsCreate: {
+      product: {
+        options: Array<{ id: string; name: string; values: string[] }>;
+      } | null;
+      userErrors: Array<{ field: string[]; message: string }>;
+    };
+  };
+}
+
+interface ProductOptionsDeleteResponse {
+  data: {
+    productOptionsDelete: {
+      deletedOptionsIds: string[];
+      userErrors: Array<{ field: string[]; message: string }>;
+    };
+  };
+}
+
+interface GetProductOptionsResponse {
+  data: {
+    product: {
+      options: Array<{ id: string; name: string }>;
+    } | null;
   };
 }
 
@@ -89,6 +130,11 @@ const GET_PRODUCT_VARIANTS_QUERY = `#graphql
       id
       title
       tags
+      options {
+        id
+        name
+        values
+      }
       variants(first: 100) {
         edges {
           node {
@@ -99,8 +145,53 @@ const GET_PRODUCT_VARIANTS_QUERY = `#graphql
             compareAtPrice
             inventoryQuantity
             inventoryPolicy
+            selectedOptions {
+              name
+              value
+            }
           }
         }
+      }
+    }
+  }
+`;
+
+const GET_PRODUCT_OPTIONS_QUERY = `#graphql
+  query GetProductOptions($id: ID!) {
+    product(id: $id) {
+      options {
+        id
+        name
+      }
+    }
+  }
+`;
+
+const PRODUCT_OPTIONS_CREATE_MUTATION = `#graphql
+  mutation ProductOptionsCreate($productId: ID!, $options: [OptionCreateInput!]!) {
+    productOptionsCreate(productId: $productId, options: $options) {
+      product {
+        options {
+          id
+          name
+          values
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const PRODUCT_OPTIONS_DELETE_MUTATION = `#graphql
+  mutation ProductOptionsDelete($productId: ID!, $options: [ID!]!) {
+    productOptionsDelete(productId: $productId, options: $options) {
+      deletedOptionsIds
+      userErrors {
+        field
+        message
       }
     }
   }
@@ -181,16 +272,14 @@ async function handleActivate(
       );
     }
 
-    // Use the first (base) variant as the reference price point.
-    const baseVariant = existingVariants[0];
-    if (!baseVariant) {
+    if (existingVariants.length === 0) {
       return Response.json(
         { error: `Product "${config.productId}" has no variants.` },
         { status: 422 },
       );
     }
 
-    // Generate price points for this product
+    // Generate price points once for this product
     let pricePoints: number[];
     try {
       pricePoints = generatePricePoints(
@@ -211,14 +300,56 @@ async function handleActivate(
       throw err;
     }
 
-    // Create one Shopify variant per price point.
-    const variantInputs = pricePoints.map((price) => ({
-      price: price.toFixed(2),
-      inventoryPolicy: baseVariant.inventoryPolicy,
-      optionValues: [{ optionName: "Title", name: price.toFixed(2) }],
-      // SKU not set — experiment variants are purely for price routing
-    }));
+    // Add a new _pm_price option to the product with all price point values.
+    // This allows experiment variants to carry distinct option combinations.
+    const priceOptionValues = pricePoints.map((p) => p.toFixed(2));
+    const optionsCreateRes = await admin.graphql(PRODUCT_OPTIONS_CREATE_MUTATION, {
+      variables: {
+        productId: config.productId,
+        options: [{ name: "_pm_price", values: priceOptionValues.map((v) => ({ name: v })) }],
+      },
+    });
+    const optionsCreateJson = (await optionsCreateRes.json()) as ProductOptionsCreateResponse;
+    const optionsCreateResult = optionsCreateJson.data.productOptionsCreate;
 
+    if (optionsCreateResult.userErrors.length > 0) {
+      return Response.json(
+        {
+          error: `Shopify option creation failed for product "${config.productId}": ${optionsCreateResult.userErrors.map((e) => e.message).join(", ")}`,
+        },
+        { status: 422 },
+      );
+    }
+
+    // Build variant inputs: existingVariants × pricePoints, one new variant per combo.
+    // Track the base variant for each input so we can write ExperimentSetup correctly.
+    const variantInputs: Array<{
+      price: string;
+      inventoryPolicy: string;
+      optionValues: Array<{ optionName: string; name: string }>;
+    }> = [];
+    const variantBaseIds: string[] = []; // parallel array — baseVariantId for each input
+
+    for (const baseVariant of existingVariants) {
+      const inheritedOptions = baseVariant.selectedOptions.map((opt) => ({
+        optionName: opt.name,
+        name: opt.value,
+      }));
+
+      for (const price of pricePoints) {
+        variantInputs.push({
+          price: price.toFixed(2),
+          inventoryPolicy: baseVariant.inventoryPolicy,
+          optionValues: [
+            ...inheritedOptions,
+            { optionName: "_pm_price", name: price.toFixed(2) },
+          ],
+        });
+        variantBaseIds.push(baseVariant.id);
+      }
+    }
+
+    // Single bulk create call for all new variants across all base variants.
     const createRes = await admin.graphql(BULK_CREATE_VARIANTS_MUTATION, {
       variables: {
         productId: config.productId,
@@ -245,7 +376,9 @@ async function handleActivate(
     // DB writes (all within a single transaction per product)
     // ---------------------------------------------------------------------------
     await db.$transaction(async (tx) => {
-      // 1. ExperimentMerchantInputs — EAV rows for merchant-supplied config
+      // 1. ExperimentMerchantInputs — EAV rows for merchant-supplied config.
+      //    Keyed against the first existing variant as the canonical reference.
+      const canonicalVariantId = existingVariants[0].id;
       const eavParams: Array<[string, string]> = [
         ["IncludedInExperiment", "true"],
         ["PriceMin", config.minPrice.toFixed(2)],
@@ -262,7 +395,7 @@ async function handleActivate(
           MerchantId: merchantId,
           ExperimentDatetimeSubmitted: experimentDatetime,
           ProductId: config.productId,
-          VariantId: baseVariant.id,
+          VariantId: canonicalVariantId,
           ExperimentParameter: param,
           ExperimentParameterValue: value,
         })),
@@ -286,13 +419,14 @@ async function handleActivate(
         })),
       });
 
-      // 3. ExperimentSetup — one row per created experiment variant
+      // 3. ExperimentSetup — one row per created experiment variant.
+      //    BaseVariantId is the existing variant this experiment variant was created from.
       await tx.experimentSetup.createMany({
-        data: createdVariants.map((v) => ({
+        data: createdVariants.map((v, i) => ({
           MerchantId: merchantId,
           ExperimentDatetimeSubmitted: experimentDatetime,
           ProductId: config.productId,
-          BaseVariantId: baseVariant.id,
+          BaseVariantId: variantBaseIds[i],
           ExperimentVariantId: v.id,
           ExperimentSubset: null,
           Price: v.price,
@@ -378,7 +512,7 @@ async function handleCancel(
     variantsByProduct.set(setup.ProductId, existing);
   }
 
-  // Delete experiment variants from Shopify
+  // Delete experiment variants from Shopify, then remove the _pm_price option
   for (const [productId, variantIds] of variantsByProduct) {
     const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
       variables: { productId, variantsIds: variantIds },
@@ -393,6 +527,30 @@ async function handleCancel(
         `Shopify variant deletion errors for product ${productId}:`,
         deleteResult.userErrors,
       );
+    }
+
+    // Fetch the product's current options to find the _pm_price option ID
+    const optionsRes = await admin.graphql(GET_PRODUCT_OPTIONS_QUERY, {
+      variables: { id: productId },
+    });
+    const optionsJson = (await optionsRes.json()) as GetProductOptionsResponse;
+    const pmPriceOption = optionsJson.data.product?.options.find(
+      (o) => o.name === "_pm_price",
+    );
+
+    if (pmPriceOption) {
+      const optionsDeleteRes = await admin.graphql(PRODUCT_OPTIONS_DELETE_MUTATION, {
+        variables: { productId, options: [pmPriceOption.id] },
+      });
+      const optionsDeleteJson = (await optionsDeleteRes.json()) as ProductOptionsDeleteResponse;
+      const optionsDeleteResult = optionsDeleteJson.data.productOptionsDelete;
+
+      if (optionsDeleteResult.userErrors.length > 0) {
+        console.error(
+          `Shopify option deletion errors for product ${productId}:`,
+          optionsDeleteResult.userErrors,
+        );
+      }
     }
   }
 
