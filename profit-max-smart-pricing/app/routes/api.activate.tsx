@@ -268,20 +268,30 @@ async function handleActivate(
     });
 
     if (existingExperiment) {
-      // Fetch experiment variant IDs to remove from Shopify
+      // Fetch base variant IDs from DB so we never accidentally delete them.
       const existingSetups = await db.experimentSetup.findMany({
         where: {
           MerchantId: merchantId,
           ExperimentDatetimeSubmitted: existingExperiment.ExperimentDatetimeSubmitted,
         },
-        select: { ExperimentVariantId: true },
+        select: { BaseVariantId: true },
       });
 
-      const existingVariantIds = existingSetups.map((s) => s.ExperimentVariantId);
+      const baseVariantIds = new Set(existingSetups.map((s) => s.BaseVariantId));
 
-      if (existingVariantIds.length > 0) {
+      // Identify experiment variants directly from Shopify (resilient to stale DB IDs):
+      // any variant with a _pm_price selected option that isn't itself a base variant.
+      const experimentVariantIds = existingVariants
+        .filter(
+          (v) =>
+            v.selectedOptions.some((o) => o.name === "_pm_price") &&
+            !baseVariantIds.has(v.id),
+        )
+        .map((v) => v.id);
+
+      if (experimentVariantIds.length > 0) {
         const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
-          variables: { productId: config.productId, variantsIds: existingVariantIds },
+          variables: { productId: config.productId, variantsIds: experimentVariantIds },
         });
         const deleteJson = (await deleteRes.json()) as BulkDeleteResponse;
         if (deleteJson.data.productVariantsBulkDelete.userErrors.length > 0) {
