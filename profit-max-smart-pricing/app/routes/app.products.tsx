@@ -388,71 +388,98 @@ export default function ProductsPage() {
 
   const changedProducts = enabledProducts.filter((p) => hasConfigChanged(p.id));
 
+  // Products that have an active server experiment but are now toggled off.
+  // These need to be cancelled when the user saves.
+  const productsToRemove = products.filter(
+    (p) => !configs[p.id]?.enabled && serverConfigsRef.current[p.id]?.enabled,
+  );
+
+  const totalChanges = changedProducts.length + productsToRemove.length;
+
   // ---------------------------------------------------------------------------
   // Activate handler — POST to /api/activate
   // ---------------------------------------------------------------------------
 
-  const handleActivateConfirm = async () => {
-    if (changedProducts.length === 0) return;
+  const handleSaveAndApplyConfirm = async () => {
+    if (totalChanges === 0) return;
 
     setActivating(true);
     setActivateResult(null);
     closeModal(activateModalRef);
 
-    const payload = {
-      action: "activate",
-      products: changedProducts.map((p) => {
-        const config = configs[p.id];
-        const exactPoints = config.exactPricePoints
-          .split(",")
-          .map((s) => parseFloat(s.trim()))
-          .filter((n) => !isNaN(n));
-
-        // Cost of production: explicit field takes priority over default %
-        let costOfProduction: number | null = null;
-        if (config.costOfProduction !== "") {
-          costOfProduction = parseFloat(config.costOfProduction);
-        } else if (globalSettings.defaultCostPercent !== "") {
-          const pct = parseFloat(globalSettings.defaultCostPercent);
-          if (!isNaN(pct) && pct > 0) {
-            costOfProduction = p.currentPrice * (pct / 100);
-          }
-        }
-
-        return {
-          productId: p.id,
-          minPrice: parseFloat(config.minPrice),
-          maxPrice: parseFloat(config.maxPrice),
-          costOfProduction,
-          regionalVariation: config.regionalVariation,
-          exactPricePoints: exactPoints,
-          optimizationMode: globalSettings.optimizationMode,
-          priceEndings: globalSettings.priceEndings,
-        };
-      }),
-    };
-
     try {
-      const res = await fetch("/api/activate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = (await res.json()) as { error?: string };
-
-      if (res.ok) {
-        setActivateResult({
-          success: true,
-          message: "Experiments activated successfully! Reloading…",
+      // Step 1 — cancel products that were toggled off
+      if (productsToRemove.length > 0) {
+        const cancelRes = await fetch("/api/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "cancel_products",
+            productIds: productsToRemove.map((p) => p.id),
+          }),
         });
-        setHasUnsavedChanges(false);
-        setTimeout(() => window.location.reload(), 1800);
-      } else {
-        setActivateResult({
-          success: false,
-          message: data.error ?? "Activation failed. Please try again.",
-        });
+        const cancelData = (await cancelRes.json()) as { error?: string };
+        if (!cancelRes.ok) {
+          setActivateResult({
+            success: false,
+            message: cancelData.error ?? "Failed to cancel removed products. Please try again.",
+          });
+          return;
+        }
       }
+
+      // Step 2 — activate/update changed products
+      if (changedProducts.length > 0) {
+        const activatePayload = {
+          action: "activate",
+          products: changedProducts.map((p) => {
+            const config = configs[p.id];
+            const exactPoints = config.exactPricePoints
+              .split(",")
+              .map((s) => parseFloat(s.trim()))
+              .filter((n) => !isNaN(n));
+
+            let costOfProduction: number | null = null;
+            if (config.costOfProduction !== "") {
+              costOfProduction = parseFloat(config.costOfProduction);
+            } else if (globalSettings.defaultCostPercent !== "") {
+              const pct = parseFloat(globalSettings.defaultCostPercent);
+              if (!isNaN(pct) && pct > 0) {
+                costOfProduction = p.currentPrice * (pct / 100);
+              }
+            }
+
+            return {
+              productId: p.id,
+              minPrice: parseFloat(config.minPrice),
+              maxPrice: parseFloat(config.maxPrice),
+              costOfProduction,
+              regionalVariation: config.regionalVariation,
+              exactPricePoints: exactPoints,
+              optimizationMode: globalSettings.optimizationMode,
+              priceEndings: globalSettings.priceEndings,
+            };
+          }),
+        };
+
+        const activateRes = await fetch("/api/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(activatePayload),
+        });
+        const activateData = (await activateRes.json()) as { error?: string };
+        if (!activateRes.ok) {
+          setActivateResult({
+            success: false,
+            message: activateData.error ?? "Activation failed. Please try again.",
+          });
+          return;
+        }
+      }
+
+      setActivateResult({ success: true, message: "Changes applied successfully! Reloading…" });
+      setHasUnsavedChanges(false);
+      setTimeout(() => window.location.reload(), 1800);
     } catch {
       setActivateResult({
         success: false,
@@ -533,7 +560,7 @@ export default function ProductsPage() {
       {/* ------------------------------------------------------------------ */}
       {hasUnsavedChanges && !activating && (
         <s-banner tone="warning" heading="You have unsaved changes">
-          Click <s-text type="strong">Activate</s-text> to save and apply your
+          Click <s-text type="strong">Save and Apply</s-text> to save and apply your
           configuration, or your changes will be lost if you navigate away.
         </s-banner>
       )}
@@ -549,7 +576,7 @@ export default function ProductsPage() {
       {/* Navigation blocker banner                                           */}
       {/* ------------------------------------------------------------------ */}
       {blocker.state === "blocked" && (
-        <s-banner tone="critical" heading="Leave without activating?">
+        <s-banner tone="critical" heading="Leave without saving?">
           <s-stack direction="inline" gap="base">
             <s-paragraph>
               You have unsaved changes. If you leave now they will be discarded.
@@ -677,9 +704,9 @@ export default function ProductsPage() {
           <s-button
             variant="primary"
             onClick={() => openModal(activateModalRef)}
-            disabled={activating || changedProducts.length === 0}
+            disabled={activating || totalChanges === 0}
           >
-            {activating ? "Processing…" : `Activate (${changedProducts.length})`}
+            {activating ? "Processing…" : `Save and Apply (${totalChanges})`}
           </s-button>
         </s-stack>
       </s-section>
@@ -859,38 +886,57 @@ export default function ProductsPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Activate confirmation modal                                         */}
       {/* ------------------------------------------------------------------ */}
-      <s-modal id="activate-modal" heading="Activate experiments" ref={activateModalRef}>
+      <s-modal id="activate-modal" heading="Save and Apply" ref={activateModalRef}>
         <s-stack direction="block" gap="base">
-          <s-paragraph>
-            The following products will be enrolled in price optimisation using{" "}
-            <s-text type="strong">
-              {globalSettings.optimizationMode === "revenue"
-                ? "revenue maximisation"
-                : "profit maximisation"}
-            </s-text>
-            :
-          </s-paragraph>
-          <s-unordered-list>
-            {changedProducts.map((p) => (
-              <s-list-item key={p.id}>
-                <s-text type="strong">{p.title}</s-text>
-                <s-text type="generic">
-                  {" "}
-                  — ${configs[p.id].minPrice} to ${configs[p.id].maxPrice}
-                  {configs[p.id].costOfProduction
-                    ? `, cost $${configs[p.id].costOfProduction}`
-                    : ""}
-                  {configs[p.id].regionalVariation ? ", regional variation on" : ""}
+          {changedProducts.length > 0 && (
+            <>
+              <s-paragraph>
+                The following products will be enrolled in price optimisation using{" "}
+                <s-text type="strong">
+                  {globalSettings.optimizationMode === "revenue"
+                    ? "revenue maximisation"
+                    : "profit maximisation"}
                 </s-text>
-              </s-list-item>
-            ))}
-          </s-unordered-list>
-          {changedProducts.length === 0 && (
+                :
+              </s-paragraph>
+              <s-unordered-list>
+                {changedProducts.map((p) => (
+                  <s-list-item key={p.id}>
+                    <s-text type="strong">{p.title}</s-text>
+                    <s-text type="generic">
+                      {" "}
+                      — ${configs[p.id].minPrice} to ${configs[p.id].maxPrice}
+                      {configs[p.id].costOfProduction
+                        ? `, cost $${configs[p.id].costOfProduction}`
+                        : ""}
+                      {configs[p.id].regionalVariation ? ", regional variation on" : ""}
+                    </s-text>
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+            </>
+          )}
+          {productsToRemove.length > 0 && (
+            <>
+              <s-paragraph>
+                The following products will have their experiments{" "}
+                <s-text type="strong">stopped and removed</s-text>:
+              </s-paragraph>
+              <s-unordered-list>
+                {productsToRemove.map((p) => (
+                  <s-list-item key={p.id}>
+                    <s-text type="strong">{p.title}</s-text>
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+            </>
+          )}
+          {totalChanges === 0 && (
             <s-banner tone="warning" heading="No changes to apply">
               All enabled products already match their active experiment config.
             </s-banner>
           )}
-          {globalSettings.priceEndings.length === 0 && (
+          {changedProducts.length > 0 && globalSettings.priceEndings.length === 0 && (
             <s-banner tone="warning" heading="No price endings selected">
               Select at least one price ending in Global Settings.
             </s-banner>
@@ -900,12 +946,12 @@ export default function ProductsPage() {
         <s-button
           slot="primary-action"
           variant="primary"
-          onClick={handleActivateConfirm}
-          {...(changedProducts.length === 0 || globalSettings.priceEndings.length === 0
+          onClick={handleSaveAndApplyConfirm}
+          {...(totalChanges === 0 || (changedProducts.length > 0 && globalSettings.priceEndings.length === 0)
             ? { disabled: true }
             : {})}
         >
-          Confirm &amp; activate
+          Confirm and save
         </s-button>
         <s-button
           slot="secondary-actions"

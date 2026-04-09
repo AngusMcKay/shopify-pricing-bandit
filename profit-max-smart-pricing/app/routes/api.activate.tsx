@@ -118,7 +118,12 @@ interface CancelBody {
   action: "cancel";
 }
 
-type RequestBody = ActivateBody | CancelBody;
+interface CancelProductsBody {
+  action: "cancel_products";
+  productIds: string[];
+}
+
+type RequestBody = ActivateBody | CancelBody | CancelProductsBody;
 
 // ---------------------------------------------------------------------------
 // GraphQL queries / mutations
@@ -256,19 +261,18 @@ async function handleActivate(
 
     const existingVariants = product.variants.edges.map((e) => e.node);
 
-    // If an active experiment already exists for this product, cancel it first
-    // before starting fresh (cancel-and-replace flow).
+    // -------------------------------------------------------------------------
+    // Step 1 — DB cleanup
+    // If an active experiment row exists in the DB, fetch the recorded base
+    // variant IDs (used as a safety guard in Step 2) and mark it as Cancelled.
+    // -------------------------------------------------------------------------
+    let dbBaseVariantIds = new Set<string>();
     const existingExperiment = await db.experimentLive.findFirst({
-      where: {
-        MerchantId: merchantId,
-        ProductId: config.productId,
-        Status: "Active",
-      },
+      where: { MerchantId: merchantId, ProductId: config.productId, Status: "Active" },
       select: { ExperimentDatetimeSubmitted: true },
     });
 
     if (existingExperiment) {
-      // Fetch base variant IDs from DB so we never accidentally delete them.
       const existingSetups = await db.experimentSetup.findMany({
         where: {
           MerchantId: merchantId,
@@ -276,55 +280,8 @@ async function handleActivate(
         },
         select: { BaseVariantId: true },
       });
+      dbBaseVariantIds = new Set(existingSetups.map((s) => s.BaseVariantId));
 
-      const baseVariantIds = new Set(existingSetups.map((s) => s.BaseVariantId));
-
-      // Identify experiment variants directly from Shopify (resilient to stale DB IDs):
-      // any variant with a _pm_price selected option that isn't itself a base variant.
-      const experimentVariantIds = existingVariants
-        .filter(
-          (v) =>
-            v.selectedOptions.some((o) => o.name === "_pm_price") &&
-            !baseVariantIds.has(v.id),
-        )
-        .map((v) => v.id);
-
-      if (experimentVariantIds.length > 0) {
-        const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
-          variables: { productId: config.productId, variantsIds: experimentVariantIds },
-        });
-        const deleteJson = (await deleteRes.json()) as BulkDeleteResponse;
-        if (deleteJson.data.productVariantsBulkDelete.userErrors.length > 0) {
-          console.error(
-            `Shopify variant deletion errors during replace for product ${config.productId}:`,
-            deleteJson.data.productVariantsBulkDelete.userErrors,
-          );
-        }
-      }
-
-      // Remove the _pm_price option
-      const optionsRes = await admin.graphql(GET_PRODUCT_OPTIONS_QUERY, {
-        variables: { id: config.productId },
-      });
-      const optionsJson = (await optionsRes.json()) as GetProductOptionsResponse;
-      const pmPriceOption = optionsJson.data.product?.options.find(
-        (o) => o.name === "_pm_price",
-      );
-
-      if (pmPriceOption) {
-        const optionsDeleteRes = await admin.graphql(PRODUCT_OPTIONS_DELETE_MUTATION, {
-          variables: { productId: config.productId, options: [pmPriceOption.id] },
-        });
-        const optionsDeleteJson = (await optionsDeleteRes.json()) as ProductOptionsDeleteResponse;
-        if (optionsDeleteJson.data.productOptionsDelete.userErrors.length > 0) {
-          console.error(
-            `Shopify option deletion errors during replace for product ${config.productId}:`,
-            optionsDeleteJson.data.productOptionsDelete.userErrors,
-          );
-        }
-      }
-
-      // Mark the existing experiment as Cancelled
       await db.experimentLive.updateMany({
         where: {
           MerchantId: merchantId,
@@ -332,21 +289,73 @@ async function handleActivate(
           ExperimentDatetimeSubmitted: existingExperiment.ExperimentDatetimeSubmitted,
           Status: "Active",
         },
-        data: {
-          Status: "Cancelled",
-          LastUpdatedAt: new Date(),
-        },
+        data: { Status: "Cancelled", LastUpdatedAt: new Date() },
       });
     }
 
-    if (existingVariants.length === 0) {
+    // -------------------------------------------------------------------------
+    // Step 2 — Shopify cleanup (always driven by current Shopify state)
+    // Experiment variants are identified by having a _pm_price selectedOption
+    // whose value is NOT "_base" (the sentinel assigned to base variants).
+    // This handles partial failures, orphaned state, and re-activations alike.
+    // -------------------------------------------------------------------------
+    const experimentVariantIds = existingVariants
+      .filter((v) => {
+        if (dbBaseVariantIds.has(v.id)) return false; // never delete a recorded base variant
+        const pmOpt = v.selectedOptions.find((o) => o.name === "_pm_price");
+        return pmOpt != null && pmOpt.value !== "_base";
+      })
+      .map((v) => v.id);
+
+    if (experimentVariantIds.length > 0) {
+      const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
+        variables: { productId: config.productId, variantsIds: experimentVariantIds },
+      });
+      const deleteJson = (await deleteRes.json()) as BulkDeleteResponse;
+      if (deleteJson.data.productVariantsBulkDelete.userErrors.length > 0) {
+        console.error(
+          `Shopify variant deletion errors for product ${config.productId}:`,
+          deleteJson.data.productVariantsBulkDelete.userErrors,
+        );
+      }
+    }
+
+    // product.options from the initial query already includes id — no extra fetch needed.
+    const existingPmOption = product.options.find((o) => o.name === "_pm_price");
+    if (existingPmOption) {
+      const optionsDeleteRes = await admin.graphql(PRODUCT_OPTIONS_DELETE_MUTATION, {
+        variables: { productId: config.productId, options: [existingPmOption.id] },
+      });
+      const optionsDeleteJson = (await optionsDeleteRes.json()) as ProductOptionsDeleteResponse;
+      if (optionsDeleteJson.data.productOptionsDelete.userErrors.length > 0) {
+        console.error(
+          `Shopify option deletion errors for product ${config.productId}:`,
+          optionsDeleteJson.data.productOptionsDelete.userErrors,
+        );
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 3 — Identify base (merchant) variants
+    // Base variants are simply whatever remains after excluding the experiment
+    // variants we identified and deleted above. We do NOT filter by DB-recorded
+    // IDs here because Shopify can reassign a variant's ID when the product's
+    // option structure changes (e.g. adding _pm_price to a single-variant product
+    // that previously only had "Default Title"), making DB IDs stale.
+    // -------------------------------------------------------------------------
+    const experimentVariantIdSet = new Set(experimentVariantIds);
+    const baseVariants = existingVariants.filter((v) => !experimentVariantIdSet.has(v.id));
+
+    if (baseVariants.length === 0) {
       return Response.json(
         { error: `Product "${config.productId}" has no variants.` },
         { status: 422 },
       );
     }
 
-    // Generate price points once for this product
+    // -------------------------------------------------------------------------
+    // Step 4 — Generate price points
+    // -------------------------------------------------------------------------
     let pricePoints: number[];
     try {
       pricePoints = generatePricePoints(
@@ -367,13 +376,19 @@ async function handleActivate(
       throw err;
     }
 
-    // Add a new _pm_price option to the product with all price point values.
-    // This allows experiment variants to carry distinct option combinations.
+    // -------------------------------------------------------------------------
+    // Step 5 — Create the _pm_price option fresh
+    // Always created here because Step 2 always deletes it first (or it never
+    // existed). "_base" is listed first so Shopify auto-assigns it to all
+    // existing base variants, keeping price point values free for experiment
+    // variants.
+    // -------------------------------------------------------------------------
     const priceOptionValues = pricePoints.map((p) => p.toFixed(2));
+    const pmPriceValues = [{ name: "_base" }, ...priceOptionValues.map((v) => ({ name: v }))];
     const optionsCreateRes = await admin.graphql(PRODUCT_OPTIONS_CREATE_MUTATION, {
       variables: {
         productId: config.productId,
-        options: [{ name: "_pm_price", values: priceOptionValues.map((v) => ({ name: v })) }],
+        options: [{ name: "_pm_price", values: pmPriceValues }],
       },
     });
     const optionsCreateJson = (await optionsCreateRes.json()) as ProductOptionsCreateResponse;
@@ -388,7 +403,20 @@ async function handleActivate(
       );
     }
 
-    // Build variant inputs: existingVariants × pricePoints, one new variant per combo.
+    // Re-fetch variants to get selectedOptions that reflect the newly created
+    // _pm_price option. Shopify may restructure option assignments (e.g. on
+    // single-variant "Default Title" products) when a new option is added, making
+    // the earlier selectedOptions stale and unusable for variant creation.
+    const freshVariantsRes = await admin.graphql(GET_PRODUCT_VARIANTS_QUERY, {
+      variables: { id: config.productId },
+    });
+    const freshVariantsJson = (await freshVariantsRes.json()) as ExistingVariantsResponse;
+    const freshVariants = freshVariantsJson.data.product?.variants.edges.map((e) => e.node) ?? [];
+
+    // Map by ID so we can look up fresh selectedOptions for each base variant.
+    const freshVariantById = new Map(freshVariants.map((v) => [v.id, v]));
+
+    // Build variant inputs: baseVariants × pricePoints, one new variant per combo.
     // Track the base variant for each input so we can write ExperimentSetup correctly.
     const variantInputs: Array<{
       price: string;
@@ -397,11 +425,12 @@ async function handleActivate(
     }> = [];
     const variantBaseIds: string[] = []; // parallel array — baseVariantId for each input
 
-    for (const baseVariant of existingVariants) {
-      const inheritedOptions = baseVariant.selectedOptions.map((opt) => ({
-        optionName: opt.name,
-        name: opt.value,
-      }));
+    for (const baseVariant of baseVariants) {
+      // Use fresh selectedOptions; fall back to the original if somehow missing.
+      const freshVariant = freshVariantById.get(baseVariant.id) ?? baseVariant;
+      const inheritedOptions = freshVariant.selectedOptions
+        .filter((opt) => opt.name !== "_pm_price")
+        .map((opt) => ({ optionName: opt.name, name: opt.value }));
 
       for (const price of pricePoints) {
         variantInputs.push({
@@ -444,8 +473,8 @@ async function handleActivate(
     // ---------------------------------------------------------------------------
     await db.$transaction(async (tx) => {
       // 1. ExperimentMerchantInputs — EAV rows for merchant-supplied config.
-      //    Keyed against the first existing variant as the canonical reference.
-      const canonicalVariantId = existingVariants[0].id;
+      //    Keyed against the first base variant as the canonical reference.
+      const canonicalVariantId = baseVariants[0].id;
       const eavParams: Array<[string, string]> = [
         ["IncludedInExperiment", "true"],
         ["PriceMin", config.minPrice.toFixed(2)],
@@ -468,9 +497,9 @@ async function handleActivate(
         })),
       });
 
-      // 2. ExperimentMerchantProductSnapshot — snapshot of all existing variants
+      // 2. ExperimentMerchantProductSnapshot — snapshot of base variants only
       await tx.experimentMerchantProductSnapshot.createMany({
-        data: existingVariants.map((v) => ({
+        data: baseVariants.map((v) => ({
           MerchantId: merchantId,
           ExperimentDatetimeSubmitted: experimentDatetime,
           ProductId: config.productId,
@@ -641,6 +670,89 @@ async function handleCancel(
 }
 
 // ---------------------------------------------------------------------------
+// Cancel-products handler — cancels specific products by ID
+// ---------------------------------------------------------------------------
+
+async function handleCancelProducts(
+  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
+  session: Awaited<ReturnType<typeof authenticate.admin>>["session"],
+  productIds: string[],
+): Promise<Response> {
+  const merchantId = session.shop;
+
+  const activeLive = await db.experimentLive.findMany({
+    where: { MerchantId: merchantId, Status: "Active", ProductId: { in: productIds } },
+    select: { ExperimentDatetimeSubmitted: true, ProductId: true },
+  });
+
+  if (activeLive.length === 0) {
+    return Response.json({ success: true, cancelled: 0 }, { status: 200 });
+  }
+
+  const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
+
+  const setups = await db.experimentSetup.findMany({
+    where: {
+      MerchantId: merchantId,
+      ExperimentDatetimeSubmitted: { in: activeDatetimes },
+    },
+    select: { ProductId: true, ExperimentVariantId: true },
+  });
+
+  const variantsByProduct = new Map<string, string[]>();
+  for (const setup of setups) {
+    const existing = variantsByProduct.get(setup.ProductId) ?? [];
+    existing.push(setup.ExperimentVariantId);
+    variantsByProduct.set(setup.ProductId, existing);
+  }
+
+  for (const [productId, variantIds] of variantsByProduct) {
+    const deleteRes = await admin.graphql(BULK_DELETE_VARIANTS_MUTATION, {
+      variables: { productId, variantsIds: variantIds },
+    });
+    const deleteJson = (await deleteRes.json()) as BulkDeleteResponse;
+    if (deleteJson.data.productVariantsBulkDelete.userErrors.length > 0) {
+      console.error(
+        `Shopify variant deletion errors for product ${productId}:`,
+        deleteJson.data.productVariantsBulkDelete.userErrors,
+      );
+    }
+
+    const optionsRes = await admin.graphql(GET_PRODUCT_OPTIONS_QUERY, {
+      variables: { id: productId },
+    });
+    const optionsJson = (await optionsRes.json()) as GetProductOptionsResponse;
+    const pmPriceOption = optionsJson.data.product?.options.find(
+      (o) => o.name === "_pm_price",
+    );
+
+    if (pmPriceOption) {
+      const optionsDeleteRes = await admin.graphql(PRODUCT_OPTIONS_DELETE_MUTATION, {
+        variables: { productId, options: [pmPriceOption.id] },
+      });
+      const optionsDeleteJson = (await optionsDeleteRes.json()) as ProductOptionsDeleteResponse;
+      if (optionsDeleteJson.data.productOptionsDelete.userErrors.length > 0) {
+        console.error(
+          `Shopify option deletion errors for product ${productId}:`,
+          optionsDeleteJson.data.productOptionsDelete.userErrors,
+        );
+      }
+    }
+  }
+
+  await db.experimentLive.updateMany({
+    where: {
+      MerchantId: merchantId,
+      Status: "Active",
+      ExperimentDatetimeSubmitted: { in: activeDatetimes },
+    },
+    data: { Status: "Cancelled", LastUpdatedAt: new Date() },
+  });
+
+  return Response.json({ success: true, cancelled: activeLive.length }, { status: 200 });
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
@@ -674,6 +786,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (body.action === "cancel") {
     return handleCancel(admin, session);
+  }
+
+  if (body.action === "cancel_products") {
+    if (!Array.isArray(body.productIds) || body.productIds.length === 0) {
+      return Response.json(
+        { error: "At least one productId is required to cancel." },
+        { status: 400 },
+      );
+    }
+    return handleCancelProducts(admin, session, body.productIds);
   }
 
   return Response.json({ error: `Unknown action: ${(body as RequestBody & { action: string }).action}` }, { status: 400 });
