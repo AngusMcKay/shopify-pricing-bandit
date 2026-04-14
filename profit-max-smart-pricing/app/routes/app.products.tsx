@@ -134,9 +134,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cursor = page.pageInfo.endCursor;
   }
 
-  // Fetch active experiment configs (two-step pattern)
+  // Fetch active and paused experiment configs (two-step pattern).
+  // Paused experiments are shown in the UI so merchants can see them and
+  // re-activate after enabling the app embed on their new theme.
   const activeExperimentDatetimes = await db.experimentLive.findMany({
-    where: { MerchantId: session.shop, Status: "Active" },
+    where: { MerchantId: session.shop, Status: { in: ["Active", "Paused"] } },
     select: { ExperimentDatetimeSubmitted: true },
   });
 
@@ -316,6 +318,7 @@ export default function ProductsPage() {
   const [activateResult, setActivateResult] = useState<{
     success: boolean;
     message: string;
+    isEmbedError?: boolean;
   } | null>(null);
 
   const activateModalRef = useRef<HTMLElementTagNameMap["s-modal"]>(null);
@@ -467,11 +470,12 @@ export default function ProductsPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(activatePayload),
         });
-        const activateData = (await activateRes.json()) as { error?: string };
+        const activateData = (await activateRes.json()) as { error?: string; code?: string };
         if (!activateRes.ok) {
           setActivateResult({
             success: false,
             message: activateData.error ?? "Activation failed. Please try again.",
+            isEmbedError: activateData.code === "EMBED_NOT_ENABLED",
           });
           return;
         }
@@ -549,9 +553,22 @@ export default function ProductsPage() {
       {activateResult && (
         <s-banner
           tone={activateResult.success ? "success" : "critical"}
-          heading={activateResult.success ? "Done" : "Something went wrong"}
+          heading={
+            activateResult.success
+              ? "Done"
+              : activateResult.isEmbedError
+                ? "App embed not enabled"
+                : "Something went wrong"
+          }
         >
-          {activateResult.message}
+          <s-stack direction="block" gap="small-100">
+            <s-paragraph>{activateResult.message}</s-paragraph>
+            {activateResult.isEmbedError && (
+              <s-paragraph>
+                To enable it: open your Shopify admin → <s-text type="strong">Online Store → Themes</s-text> → <s-text type="strong">Customize</s-text> → <s-text type="strong">App Embeds</s-text> → toggle on <s-text type="strong">Profit Max</s-text>.
+              </s-paragraph>
+            )}
+          </s-stack>
         </s-banner>
       )}
 

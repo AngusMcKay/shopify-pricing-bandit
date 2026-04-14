@@ -133,6 +133,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Validate that the ExperimentVariantId belongs to an active experiment.
   // Stale JS snippets on the storefront may send impressions for experiments
   // that have since completed or been cancelled — accept silently without writing.
+  // Only record impressions for Active experiments.
+  // Paused and Cancelled experiments are dropped silently — the storefront
+  // snippet should not be sending impressions for them (config returns
+  // { active: false }), but stale snippet instances may still send them.
   const activeSetup = await db.experimentSetup.findFirst({
     where: {
       MerchantId: body.MerchantId,
@@ -150,7 +154,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   if (!activeSetup) {
-    // No active experiment for this variant — drop silently.
+    // No active (non-paused) experiment for this variant — drop silently.
     return Response.json({ success: true }, { status: 200 });
   }
 

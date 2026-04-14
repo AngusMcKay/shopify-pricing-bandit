@@ -92,6 +92,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const variantGid = toVariantGid(lineItem.variant_id);
 
     // Only attribute purchases to experiments that are currently Active.
+    // Paused experiments are not running — don't record purchases against them.
     // Step 1: get the datetimes of active experiments for this merchant.
     const activeLive = await db.experimentLive.findMany({
       where: { MerchantId: shop, Status: "Active" },

@@ -45,7 +45,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
-  // Look up the active experiment for this merchant + product.
+  // Only serve config for Active experiments.
+  // Paused and Cancelled experiments return { active: false } so the storefront
+  // snippet does nothing — the experiment is not running.
   const activeLive = await db.experimentLive.findFirst({
     where: {
       MerchantId: merchantId,

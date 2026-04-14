@@ -53,6 +53,7 @@ model Merchants {
   impressions         Impressions[]
   purchases           Purchases[]
   banditParameters    BanditParameters[]
+  notifications       Notifications[]
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +246,24 @@ model BanditParameters {
 
   @@index([MerchantId])
   @@index([ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// In-app notifications for merchants (e.g. experiment paused warnings)
+// ---------------------------------------------------------------------------
+model Notifications {
+  Id         Int      @id @default(autoincrement())
+  MerchantId String
+  Message    String
+  Type       String   // "warning" | "info" | "error"
+  IsRead     Boolean  @default(false)
+  CreatedAt  DateTime @default(now())
+
+  merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
+
+  @@index([MerchantId])
+  @@index([IsRead])
 }
 
 // ---------------------------------------------------------------------------
