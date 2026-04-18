@@ -1,12 +1,40 @@
-{{- 'profit-max.js' | asset_url | script_tag -}}
+<style>
+[name="_pm_price"],[name="options[_pm_price]"],[id*="_pm_price"],[for*="_pm_price"],[data-option*="pm_price"]{display:none!important}
+fieldset:has([name*="_pm_price"]),li:has([name*="_pm_price"]){display:none!important}
+html.pm-prices-loading .price__regular,
+html.pm-prices-loading .price,
+html.pm-prices-loading [data-product-price],
+html.pm-prices-loading .price-item,
+html.pm-prices-loading .product__price{visibility:hidden!important}
+</style>
+
+{%- comment -%}
+  Synchronous inline script — runs before first paint.
+  Adds pm-prices-loading to <html> on product and list pages so price elements
+  stay invisible until profit-max.js reveals them after applying experiment prices.
+  Safety timeout removes the class if the async flow never completes.
+{%- endcomment -%}
+<script>
+(function(){try{
+  var isProduct=
+    (window.Shopify&&window.Shopify.product&&window.Shopify.product.id)||
+    document.querySelector('meta[name="product-id"]')||
+    (window.__st&&window.__st.rtyp==='product');
+  var isList=!isProduct&&document.querySelectorAll('a[href*="/products/"]').length>0;
+  if(isProduct||isList){
+    document.documentElement.classList.add('pm-prices-loading');
+    setTimeout(function(){document.documentElement.classList.remove('pm-prices-loading');},
+      isProduct?2000:1000);
+  }
+}catch(e){}}());
+</script>
+
+<script src="{{ 'profit-max.js' | asset_url }}" defer></script>
 
 {% schema %}
 {
   "name": "Profit Max",
   "target": "body",
-  "enabled_on": {
-    "groups": ["*"]
-  },
   "settings": []
 }
 {% endschema %}

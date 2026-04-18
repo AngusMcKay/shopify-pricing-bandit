@@ -6,7 +6,7 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { injectSnippetIntoAllThemes } from "../services/themeInjection.server";
+import { isEmbedEnabledOnPublishedTheme } from "../services/embedStatus.server";
 
 // ---------------------------------------------------------------------------
 // Loader — runs on every authenticated admin page load
@@ -14,13 +14,6 @@ import { injectSnippetIntoAllThemes } from "../services/themeInjection.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
-
-  // Detect new installs before the upsert so we can trigger one-time setup.
-  const existingMerchant = await db.merchants.findUnique({
-    where: { MerchantId: session.shop },
-    select: { MerchantId: true },
-  });
-  const isNewInstall = existingMerchant === null;
 
   // Upsert merchant on every authenticated load — idempotent.
   await db.merchants.upsert({
@@ -37,22 +30,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  // On first install, inject the snippet into all existing themes. Fire and forget.
-  if (isNewInstall) {
-    injectSnippetIntoAllThemes(admin).catch((e) => {
-      console.error(`[ProfitMax] Theme injection on install failed for ${session.shop}:`, e);
-    });
-  }
-
-  // Fetch unread notifications for this merchant, newest first.
-  const notifications = await db.notifications.findMany({
-    where: { MerchantId: session.shop, IsRead: false },
-    orderBy: { CreatedAt: "desc" },
-    select: { Id: true, Message: true, Type: true },
-  });
+  // Check embed status and notifications in parallel.
+  const [notifications, embedEnabled] = await Promise.all([
+    db.notifications.findMany({
+      where: { MerchantId: session.shop, IsRead: false },
+      orderBy: { CreatedAt: "desc" },
+      select: { Id: true, Message: true, Type: true },
+    }),
+    isEmbedEnabledOnPublishedTheme(admin),
+  ]);
 
   // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "", notifications };
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", notifications, embedEnabled };
 };
 
 // ---------------------------------------------------------------------------
@@ -127,7 +116,7 @@ function NotificationBanner({ id, message, type }: NotificationBannerProps) {
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const { apiKey, notifications } = useLoaderData<typeof loader>();
+  const { apiKey, notifications, embedEnabled } = useLoaderData<typeof loader>();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -137,6 +126,15 @@ export default function App() {
         <s-link href="/app/analytics">Analytics</s-link>
         <s-link href="/app/docs">Docs &amp; FAQ</s-link>
       </s-app-nav>
+      {!embedEnabled && (
+        <s-banner tone="warning" heading="Profit Max embed not enabled">
+          <s-paragraph>
+            The Profit Max app embed is not enabled on your current theme. Experiments will not run
+            until it is enabled. Go to <strong>Online Store → Themes → Customize → App embeds</strong> and
+            toggle on &quot;Profit Max&quot;.
+          </s-paragraph>
+        </s-banner>
+      )}
       {notifications.map((n: { Id: number; Message: string; Type: string }) => (
         <NotificationBanner key={n.Id} id={n.Id} message={n.Message} type={n.Type} />
       ))}

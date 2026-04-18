@@ -2,8 +2,9 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { generatePricePoints, PricePointError } from "../utils/pricing";
-import { injectSnippetIntoAllThemes } from "../services/themeInjection.server";
 import { isEmbedEnabledOnPublishedTheme } from "../services/embedStatus.server";
+import { syncExperimentMetafield, ensureMetafieldDefinition } from "../services/experimentMetafield.server";
+import { injectHeadSnippet } from "../services/themeHeadInjection.server";
 
 // ---------------------------------------------------------------------------
 // GraphQL types
@@ -622,10 +623,14 @@ async function handleActivate(
     });
   }
 
-  // Re-inject the snippet into all themes as a safety net. Fire and forget.
-  injectSnippetIntoAllThemes(admin).catch((e) => {
-    console.error("[ProfitMax] Theme injection on activation failed:", e);
-  });
+  // Fire-and-forget: update the shop metafield and re-inject the head snippet
+  // so collection pages immediately reflect the new experiments without requiring
+  // a separate network call from the storefront snippet.
+  void (async () => {
+    await ensureMetafieldDefinition(admin);
+    await syncExperimentMetafield(admin, session.shop);
+    await injectHeadSnippet(admin);
+  })();
 
   return Response.json({ success: true }, { status: 201 });
 }
@@ -662,6 +667,8 @@ async function handleCancel(
     },
     data: { Status: "Cancelled", LastUpdatedAt: new Date() },
   });
+
+  void syncExperimentMetafield(admin, session.shop);
 
   return Response.json({ success: true, cancelled: activeLive.length }, { status: 200 });
 }
@@ -703,6 +710,8 @@ async function handleCancelProducts(
     },
     data: { Status: "Cancelled", LastUpdatedAt: new Date() },
   });
+
+  void syncExperimentMetafield(admin, session.shop);
 
   return Response.json({ success: true, cancelled: activeLive.length }, { status: 200 });
 }

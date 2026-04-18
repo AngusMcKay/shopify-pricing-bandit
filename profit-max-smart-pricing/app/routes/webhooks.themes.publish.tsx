@@ -3,6 +3,8 @@ import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { isEmbedEnabledOnTheme } from "../services/embedStatus.server";
 import { sendEmail } from "../services/email.server";
+import { syncExperimentMetafield, ensureMetafieldDefinition } from "../services/experimentMetafield.server";
+import { injectHeadSnippetIntoTheme } from "../services/themeHeadInjection.server";
 
 // ---------------------------------------------------------------------------
 // themes/publish webhook
@@ -41,7 +43,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const embedEnabled = await isEmbedEnabledOnTheme(admin, themeGid);
 
   if (embedEnabled) {
-    // Embed is on — nothing to do.
+    // Embed is on — inject the head snippet into the new theme and sync the
+    // metafield so collection pages can assign visitors without a network fetch.
+    void (async () => {
+      await ensureMetafieldDefinition(admin);
+      await syncExperimentMetafield(admin, shop);
+      await injectHeadSnippetIntoTheme(admin, themeGid);
+    })();
     return new Response(null, { status: 200 });
   }
 
