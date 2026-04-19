@@ -87,20 +87,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  // Build a productId → assignments map.
+  // Build a productId → { experimentDatetimeSubmitted, assignments } map.
+  const datetimeByProduct: Record<string, string> = {};
+  for (const l of activeLives) {
+    datetimeByProduct[l.ProductId] = l.ExperimentDatetimeSubmitted.toISOString();
+  }
+
   const prices: Record<
     string,
-    Array<{
-      baseVariantId: string;
-      experimentVariantId: string;
-      price: string;
-      probability: number;
-    }>
+    {
+      experimentDatetimeSubmitted: string;
+      assignments: Array<{
+        baseVariantId: string;
+        experimentVariantId: string;
+        price: string;
+        probability: number;
+      }>;
+    }
   > = {};
 
   for (const s of setups) {
-    if (!prices[s.ProductId]) prices[s.ProductId] = [];
-    prices[s.ProductId].push({
+    if (!prices[s.ProductId]) {
+      prices[s.ProductId] = {
+        experimentDatetimeSubmitted: datetimeByProduct[s.ProductId] || '',
+        assignments: [],
+      };
+    }
+    prices[s.ProductId].assignments.push({
       baseVariantId: s.BaseVariantId,
       experimentVariantId: s.ExperimentVariantId,
       price: s.Price.toString(),

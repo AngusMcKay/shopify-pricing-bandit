@@ -1,32 +1,56 @@
+{%- comment -%}
+  Profit Max — head-injected app embed block.
+
+  Renders in <head> (target: "head") so all CSS and inline JS execute
+  BEFORE any <body> content is parsed. This eliminates price flicker
+  entirely — prices are hidden from first paint and revealed only after
+  the experiment price has been written to the DOM.
+
+  Data flow:
+    1. Read the shop metafield containing active experiment configs.
+    2. Embed it as window.__pmConfig (inline JSON — zero network requests).
+    3. Embed page-specific product IDs so collection/product page assignment
+       can happen synchronously in profit-max.js.
+    4. CSS hides price elements on product/collection pages by default.
+    5. profit-max.js (deferred) applies experiment prices, then reveals.
+{%- endcomment -%}
+
+{%- comment -%} --- Variant UI suppression (always active) --- {%- endcomment -%}
 <style>
 [name="_pm_price"],[name="options[_pm_price]"],[id*="_pm_price"],[for*="_pm_price"],[data-option*="pm_price"]{display:none!important}
 fieldset:has([name*="_pm_price"]),li:has([name*="_pm_price"]){display:none!important}
-html.pm-prices-loading .price__regular,
-html.pm-prices-loading .price,
-html.pm-prices-loading [data-product-price],
-html.pm-prices-loading .price-item,
-html.pm-prices-loading .product__price{visibility:hidden!important}
 </style>
 
-{%- comment -%}
-  Synchronous inline script — runs before first paint.
-  Adds pm-prices-loading to <html> on product and list pages so price elements
-  stay invisible until profit-max.js reveals them after applying experiment prices.
-  Safety timeout removes the class if the async flow never completes.
-{%- endcomment -%}
+{%- comment -%} --- Anti-flicker: hide prices on product & collection pages --- {%- endcomment -%}
+{%- if request.page_type == 'product' or request.page_type == 'collection' or request.page_type == 'index' -%}
+<style id="pm-antiflicker">
+.price__regular,
+.price,
+[data-product-price],
+.price-item,
+.product__price{opacity:0!important;transition:opacity .15s ease}
+html.pm-prices-ready .price__regular,
+html.pm-prices-ready .price,
+html.pm-prices-ready [data-product-price],
+html.pm-prices-ready .price-item,
+html.pm-prices-ready .product__price{opacity:1!important}
+</style>
+<script>window.__pmSafetyTimer=setTimeout(function(){document.documentElement.classList.add('pm-prices-ready')},{% if request.page_type == 'product' %}5000{% else %}3000{% endif %})</script>
+{%- endif -%}
+
+{%- comment -%} --- Inline experiment config from shop metafield --- {%- endcomment -%}
+{%- assign pm_cfg = shop.metafields.profit_max_app.experiment_config -%}
 <script>
-(function(){try{
-  var isProduct=
-    (window.Shopify&&window.Shopify.product&&window.Shopify.product.id)||
-    document.querySelector('meta[name="product-id"]')||
-    (window.__st&&window.__st.rtyp==='product');
-  var isList=!isProduct&&document.querySelectorAll('a[href*="/products/"]').length>0;
-  if(isProduct||isList){
-    document.documentElement.classList.add('pm-prices-loading');
-    setTimeout(function(){document.documentElement.classList.remove('pm-prices-loading');},
-      isProduct?2000:1000);
-  }
-}catch(e){}}());
+{%- if pm_cfg != blank -%}
+window.__pmConfig={{ pm_cfg | json }};
+{%- else -%}
+window.__pmConfig={};
+{%- endif -%}
+{%- if request.page_type == 'collection' -%}
+window.__pmPageProductIds=[{%- for p in collection.products limit:50 -%}"gid://shopify/Product/{{ p.id }}"{%- unless forloop.last -%},{%- endunless -%}{%- endfor -%}];
+{%- elsif request.page_type == 'product' -%}
+window.__pmPageProductId="{{ product.id }}";
+{%- endif -%}
 </script>
 
 <script src="{{ 'profit-max.js' | asset_url }}" defer></script>
@@ -34,7 +58,7 @@ html.pm-prices-loading .product__price{visibility:hidden!important}
 {% schema %}
 {
   "name": "Profit Max",
-  "target": "body",
+  "target": "head",
   "settings": []
 }
 {% endschema %}

@@ -4,7 +4,6 @@ import db from "../db.server";
 import { generatePricePoints, PricePointError } from "../utils/pricing";
 import { isEmbedEnabledOnPublishedTheme } from "../services/embedStatus.server";
 import { syncExperimentMetafield, ensureMetafieldDefinition } from "../services/experimentMetafield.server";
-import { injectHeadSnippet } from "../services/themeHeadInjection.server";
 
 // ---------------------------------------------------------------------------
 // GraphQL types
@@ -631,13 +630,11 @@ async function handleActivate(
     });
   }
 
-  // Fire-and-forget: update the shop metafield and re-inject the head snippet
-  // so collection pages immediately reflect the new experiments without requiring
-  // a separate network call from the storefront snippet.
+  // Fire-and-forget: update the shop metafield so the embed block's Liquid
+  // renders the latest experiment config on next page load.
   void (async () => {
     await ensureMetafieldDefinition(admin);
     await syncExperimentMetafield(admin, session.shop);
-    await injectHeadSnippet(admin);
   })();
 
   return Response.json({ success: true }, { status: 201 });

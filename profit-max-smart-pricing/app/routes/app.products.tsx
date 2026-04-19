@@ -15,6 +15,7 @@ interface Product {
   currentPrice: number;
   currency: string;
   unitCost: number | null; // from inventoryItem.unitCost of first variant
+  hasMixedPrices: boolean; // true when base variants have different prices
 }
 
 interface ProductExperimentConfig {
@@ -35,6 +36,7 @@ interface ProductExperimentConfig {
 interface VariantNode {
   id: string;
   price: string;
+  selectedOptions: Array<{ name: string }>;
   inventoryItem: {
     unitCost: { amount: string; currencyCode: string } | null;
   } | null;
@@ -78,6 +80,9 @@ const PRODUCTS_QUERY = `#graphql
               node {
                 id
                 price
+                selectedOptions {
+                  name
+                }
                 inventoryItem {
                   unitCost {
                     amount
@@ -121,12 +126,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const firstVariant = p.variants.edges[0]?.node;
       const firstVariantPrice = firstVariant?.price ?? "0";
       const unitCostAmount = firstVariant?.inventoryItem?.unitCost?.amount;
+      // Check if base variants have different prices. Exclude experiment
+      // variants (those with a _pm_price option) so active experiments
+      // don't trigger a false positive.
+      const baseVariants = p.variants.edges.filter(
+        (e) => !e.node.selectedOptions.some((o) => o.name === "_pm_price"),
+      );
+      const uniquePrices = new Set(baseVariants.map((e) => e.node.price));
       products.push({
         id: p.id,
         title: p.title,
         currentPrice: parseFloat(firstVariantPrice),
         currency: p.priceRangeV2.minVariantPrice.currencyCode,
         unitCost: unitCostAmount != null ? parseFloat(unitCostAmount) : null,
+        hasMixedPrices: uniquePrices.size > 1,
       });
     }
 
@@ -773,6 +786,15 @@ export default function ProductsPage() {
                     });
                   }}
                 />
+
+                {config.enabled && product.hasMixedPrices && (
+                  <s-banner tone="warning">
+                    This product has variants with different base prices.
+                    Price experiments work best when all variants share the
+                    same price. Consider excluding this product or adjusting
+                    variant prices first.
+                  </s-banner>
+                )}
 
                 {config.enabled && (
                   <s-stack direction="block" gap="base">

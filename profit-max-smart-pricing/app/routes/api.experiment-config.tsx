@@ -61,11 +61,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ active: false });
   }
 
-  // Fetch all ExperimentSetup rows that belong to this experiment.
+  // Fetch ExperimentSetup rows for this specific product's experiment.
   const setups = await db.experimentSetup.findMany({
     where: {
       MerchantId: merchantId,
       ExperimentDatetimeSubmitted: activeLive.ExperimentDatetimeSubmitted,
+      ProductId: productId,
     },
     select: {
       BaseVariantId: true,
