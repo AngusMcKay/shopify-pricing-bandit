@@ -534,7 +534,15 @@ async function handleActivate(
     }
 
     const createdVariants = createResult.productVariants;
-    const equalProbability = Math.round((1 / createdVariants.length) * 10000) / 10000;
+
+    // Probability is per-base-variant, not across the flat list.
+    // Each base variant has the same number of price-point variants (pricePoints.length).
+    // The weighted draw in the JS snippet selects one experiment variant per base variant,
+    // so probabilities must sum to 1.0 within each base variant group.
+    const pricePointCount = baseVariants.length > 0
+      ? createdVariants.length / baseVariants.length
+      : createdVariants.length;
+    const equalProbability = Math.round((1 / pricePointCount) * 10000) / 10000;
 
     // -------------------------------------------------------------------------
     // DB writes

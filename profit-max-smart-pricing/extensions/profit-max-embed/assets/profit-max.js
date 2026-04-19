@@ -20,6 +20,15 @@
   window.__profitMax = window.__profitMax || {};
   window.__profitMax.initialised = true;
 
+  // Debug mode: add ?pm_debug=1 to any storefront URL to enable console logging.
+  var DEBUG = location.search.indexOf('pm_debug=1') !== -1;
+  function dbg() {
+    if (!DEBUG) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[ProfitMax]');
+    console.log.apply(console, args);
+  }
+
   // ===========================================================================
   // CURRENCY
   //
@@ -49,6 +58,8 @@
       // Check both Shopify globals; themes set one or both.
       var moneyFormat =
         (window.Shopify && window.Shopify.money_format) ||
+        (window.Shopify && window.Shopify.moneyFormat) ||
+        (window.theme && window.theme.moneyFormat) ||
         (window.ShopifyAnalytics && window.ShopifyAnalytics.meta &&
          window.ShopifyAnalytics.meta.currency &&
          window.ShopifyAnalytics.meta.currency.moneyFormat) || '';
@@ -71,12 +82,13 @@
         });
       }
 
-      // Priority 2: Intl.NumberFormat — use navigator.languages[0] (includes
-      // region, e.g. "en-US") so USD renders as "$" not "US$".
+      // Priority 2: Intl.NumberFormat — always use 'en-US' locale so the shop's
+      // currency formats with a bare symbol (e.g. "$" not "US$"). The visitor's
+      // locale is irrelevant here; we want the symbol to match the theme's output.
       var currency = (window.Shopify && window.Shopify.currency && window.Shopify.currency.active) || '';
       if (currency) {
         try {
-          return new Intl.NumberFormat(navigator.languages && navigator.languages[0] || 'en-US', {
+          return new Intl.NumberFormat('en-US', {
             style: 'currency', currency: currency,
             minimumFractionDigits: 2, maximumFractionDigits: 2,
           }).format(amount);
@@ -218,6 +230,11 @@
   var isListPage    = !isProductPage &&
     document.querySelectorAll('a[href*="/products/"]').length > 0;
 
+  dbg('page type:', isProductPage ? 'product id=' + productNumericId : isListPage ? 'list' : 'other');
+  dbg('shop:', shop);
+  dbg('money_format:', window.Shopify && window.Shopify.money_format);
+  dbg('__pmConfig keys:', window.__pmConfig ? Object.keys(window.__pmConfig) : 'absent');
+
   if (!isProductPage && !isListPage) return;
   if (!shop) {
     console.warn('[ProfitMax] window.Shopify.shop unavailable — exiting.');
@@ -255,93 +272,132 @@
          *   gid → [{ baseVariantId, experimentVariantId, price, probability }]
          */
         function applyCardPrices(priceMap) {
-          // Cards with data-product-id (most themes, including Dawn).
-          document.querySelectorAll('[data-product-id]').forEach(function (card) {
+          var allCardEls = document.querySelectorAll('[data-product-id]');
+          dbg('applyCardPrices: priceMap keys=', Object.keys(priceMap), 'elements with data-product-id=', allCardEls.length);
+
+          // Deduplicate: many themes (e.g. Dawn) emit multiple [data-product-id]
+          // elements per card (wrapper, image link, title link). We only want to
+          // update price elements once per product and only on the element that
+          // actually contains price children. Collect unique IDs first, then find
+          // the right element(s) for each.
+          var seenNumIds = {};
+          allCardEls.forEach(function (card) {
             var numId = card.getAttribute('data-product-id');
             if (!numId) return;
+            if (seenNumIds[numId]) return; // already processed this product
+
             var gid = buildGid('Product', numId);
             var assignments = priceMap[gid];
-            if (!Array.isArray(assignments) || assignments.length === 0) return;
+            if (!Array.isArray(assignments) || assignments.length === 0) {
+              seenNumIds[numId] = true; // no experiment — skip all elements for this product
+              dbg('no experiment for card product', gid);
+              return;
+            }
+
             var result = buildOrLoadAssignment('pm_assign' + numId, assignments);
             var firstBase = Object.keys(result.map)[0];
-            if (!firstBase) return;
+            if (!firstBase) { seenNumIds[numId] = true; return; }
             var formatted = formatMoney(result.map[firstBase].price);
-            card.querySelectorAll(CARD_PRICE_SELECTORS).forEach(function (el) {
-              el.textContent = formatted;
-            });
+
+            // Find price elements within this element. If none here, try sibling
+            // [data-product-id] elements for the same product (sub-elements first
+            // in DOM order so this is the right card, but price may be in parent).
+            var priceEls = card.querySelectorAll(CARD_PRICE_SELECTORS);
+            if (priceEls.length > 0) {
+              dbg('card', numId, '→ price=', formatted, 'price els found=', priceEls.length);
+              priceEls.forEach(function (el) { el.textContent = formatted; });
+              seenNumIds[numId] = true;
+            }
+            // If no price els in this element, leave seenNumIds unset so the
+            // next [data-product-id] element for the same product is tried.
           });
         }
 
         // ------------------------------------------------------------------
         // Path 1: use window.__pmConfig + window.__pmPageProductIds
+        //
+        // Applies prices for products already in the inline config, and queues
+        // any products missing from the config for an API fetch (Path 2).
+        // This handles newly-activated experiments that haven't been synced
+        // into the head snippet yet.
         // ------------------------------------------------------------------
         var pmConfig = window.__pmConfig;
         var pmPageIds = window.__pmPageProductIds; // array of GIDs from Liquid
-
-        if (pmConfig && typeof pmConfig === 'object' && Array.isArray(pmPageIds) && pmPageIds.length > 0) {
-          // Build a priceMap from the inline config, restricted to this page's products.
-          var inlinePriceMap = {};
-          for (var pi = 0; pi < pmPageIds.length; pi++) {
-            var gid = pmPageIds[pi];
-            var productCfg = pmConfig[gid];
-            if (productCfg && Array.isArray(productCfg.assignments)) {
-              inlinePriceMap[gid] = productCfg.assignments;
-            }
-          }
-          applyCardPrices(inlinePriceMap);
-          return; // done — no network fetch needed
-        }
-
-        // ------------------------------------------------------------------
-        // Path 2: batch API fetch fallback
-        // ------------------------------------------------------------------
         var productGidSet = new Set();
 
-        document.querySelectorAll('[data-product-id]').forEach(function (el) {
-          var id = el.getAttribute('data-product-id');
-          if (id) productGidSet.add(buildGid('Product', id));
-        });
-
-        document.querySelectorAll('script[type="application/json"]').forEach(function (el) {
-          try {
-            var data = JSON.parse(el.textContent || '');
-            if (Array.isArray(data.products)) {
-              data.products.forEach(function (p) {
-                if (p && p.id) productGidSet.add(buildGid('Product', p.id));
-              });
+        if (pmConfig && typeof pmConfig === 'object' && Array.isArray(pmPageIds) && pmPageIds.length > 0) {
+          dbg('collection path 1: __pmConfig has', Object.keys(pmConfig).length, 'products, page has', pmPageIds.length, 'ids');
+          var inlinePriceMap = {};
+          for (var pi = 0; pi < pmPageIds.length; pi++) {
+            var pgid = pmPageIds[pi];
+            var productCfg = pmConfig[pgid];
+            if (productCfg && Array.isArray(productCfg.assignments)) {
+              inlinePriceMap[pgid] = productCfg.assignments;
+            } else {
+              // Product is on the page but not in __pmConfig — may be a newly-
+              // activated experiment. Queue it for the API fetch below.
+              productGidSet.add(pgid);
             }
-          } catch (e) { /* ignore */ }
-        });
+          }
+          dbg('inlinePriceMap keys:', Object.keys(inlinePriceMap), '| queued for fetch:', productGidSet.size);
+          applyCardPrices(inlinePriceMap);
+          if (productGidSet.size === 0) return; // all products covered — no fetch needed
+          dbg('collection: falling through to fetch', productGidSet.size, 'product(s) missing from __pmConfig');
+        } else {
+          // ------------------------------------------------------------------
+          // Path 2: __pmConfig absent — collect all product IDs from the DOM
+          // ------------------------------------------------------------------
+          dbg('collection path 2: __pmConfig absent or no page ids, using API fetch');
 
-        if (productGidSet.size === 0) return;
+          document.querySelectorAll('[data-product-id]').forEach(function (el) {
+            var id = el.getAttribute('data-product-id');
+            if (id) productGidSet.add(buildGid('Product', id));
+          });
+
+          document.querySelectorAll('script[type="application/json"]').forEach(function (el) {
+            try {
+              var data = JSON.parse(el.textContent || '');
+              if (Array.isArray(data.products)) {
+                data.products.forEach(function (p) {
+                  if (p && p.id) productGidSet.add(buildGid('Product', p.id));
+                });
+              }
+            } catch (e) { /* ignore */ }
+          });
+        }
+
+        if (productGidSet.size === 0) {
+          dbg('collection fetch: no products queued — nothing to fetch');
+          return;
+        }
 
         var productIds = Array.from(productGidSet);
-        var fetchCacheKey = 'pm_batch_' + productIds.slice().sort().join(',');
-        var priceMap = null;
 
-        var cachedBatch = sessionStorage.getItem(fetchCacheKey);
-        if (cachedBatch) {
-          try { priceMap = JSON.parse(cachedBatch); } catch (e) { priceMap = null; }
+        // Fetch experiment config from API — no session cache here.
+        // Caching experiment *existence* causes stale results when a new
+        // experiment is activated mid-session (the cache would still say
+        // "no experiment" for the new product). The per-product assignment
+        // is cached separately by buildOrLoadAssignment under pm_assign<id>.
+        var url =
+          'https://' + shop + '/apps/profit-max/api/collection-prices' +
+          '?merchantId=' + encodeURIComponent(shop) +
+          '&productIds=' + encodeURIComponent(productIds.join(','));
+
+        dbg('collection fetch URL:', url);
+        var res;
+        try { res = await fetch(url); } catch (e) {
+          console.warn('[ProfitMax] Collection prices fetch failed:', e);
+          return;
+        }
+        if (!res.ok) {
+          console.warn('[ProfitMax] Collection prices fetch status:', res.status);
+          return;
         }
 
-        if (!priceMap) {
-          var url =
-            'https://' + shop + '/apps/profit-max/api/collection-prices' +
-            '?merchantId=' + encodeURIComponent(shop) +
-            '&productIds=' + encodeURIComponent(productIds.join(','));
-
-          var res;
-          try { res = await fetch(url); } catch (e) {
-            console.warn('[ProfitMax] Collection prices fetch failed:', e);
-            return;
-          }
-          if (!res.ok) return;
-
-          var body;
-          try { body = await res.json(); } catch (e) { return; }
-          priceMap = body.prices || {};
-          try { sessionStorage.setItem(fetchCacheKey, JSON.stringify(priceMap)); } catch (e) { /* quota */ }
-        }
+        var body;
+        try { body = await res.json(); } catch (e) { return; }
+        var priceMap = body.prices || {};
+        dbg('collection fetch returned', Object.keys(priceMap).length, 'products with experiments');
 
         applyCardPrices(priceMap);
 
@@ -362,48 +418,53 @@
   var PRICE_SELECTORS = '.price__regular, .price, [data-product-price], .price-item, .product__price';
 
   // ---------------------------------------------------------------------------
-  // Product section scoping
+  // Price element scoping
   //
-  // All price-element reads and writes MUST be scoped to the main product
-  // section to avoid accidentally updating price elements in "Related products"
-  // or "Recently viewed" carousels further down the page.
+  // We want to update the main product price without touching price elements
+  // inside "Related products" / "Recently viewed" carousels lower on the page.
   //
-  // We try specific data attributes first (most reliable), then walk up from
-  // the product form, caching the result so the DOM lookup only happens once.
+  // Strategy: find all matching price elements on the page, then exclude any
+  // that live inside a container whose class/id signals it is a carousel or
+  // recommendations section. This is more reliable than trying to identify the
+  // "main product section" container, which varies wildly between themes.
+  //
+  // We also prefer elements that are closer to (or inside) the cart form,
+  // falling back to the full filtered set when no form-adjacent elements exist.
   // ---------------------------------------------------------------------------
-  var pm_productSection = null;
 
-  function getProductSection() {
-    if (pm_productSection) return pm_productSection;
-    try {
-      var candidates = [
-        document.querySelector('[data-section-type="product"]'),
-        document.querySelector('[data-product-form]'),
-        document.querySelector('#MainProduct-template'),
-        document.querySelector('[id^="MainProduct"]'),
-      ];
-      for (var ci = 0; ci < candidates.length; ci++) {
-        if (candidates[ci]) { pm_productSection = candidates[ci]; return pm_productSection; }
-      }
-      // Walk up from the form to its closest meaningful ancestor.
-      var form = document.querySelector('form[action*="/cart/add"]');
-      if (form) {
-        var ancestor = form.closest('[class*="product"]') || form.closest('section') || form.parentElement;
-        if (ancestor && ancestor !== document.body) { pm_productSection = ancestor; return pm_productSection; }
-      }
-    } catch (e) { /* ignore */ }
-    // Absolute fallback — should never reach here on a valid product page.
-    pm_productSection = document.body;
-    return pm_productSection;
+  // Class/id patterns that identify related-product containers to exclude.
+  var CAROUSEL_RE = /related|recommend|compl[ei]ment|recently[_-]?view|cross[_-]?sell|upsell|bundle|also|similar/i;
+
+  function isInsideCarousel(el) {
+    var node = el.parentElement;
+    for (var d = 0; d < 10 && node && node !== document.body; d++) {
+      if (CAROUSEL_RE.test(node.className || '') || CAROUSEL_RE.test(node.id || '')) return true;
+      node = node.parentElement;
+    }
+    return false;
   }
 
-  /** querySelectorAll scoped to the product section. */
+  /** Return all product-price elements that are NOT inside a carousel/recommendations block. */
   function queryPriceEls() {
-    return getProductSection().querySelectorAll(PRICE_SELECTORS);
+    var all = Array.prototype.slice.call(document.querySelectorAll(PRICE_SELECTORS));
+    var filtered = all.filter(function (el) { return !isInsideCarousel(el); });
+    // Prefer elements inside or near the cart form if any exist there.
+    var form = document.querySelector('form[action*="/cart/add"]');
+    if (form) {
+      var formParent = form.parentElement || form;
+      var nearForm = filtered.filter(function (el) { return formParent.contains(el) || el.contains(form); });
+      if (nearForm.length > 0) {
+        dbg('queryPriceEls: near-form set, count=' + nearForm.length, nearForm);
+        return nearForm;
+      }
+    }
+    var result = filtered.length > 0 ? filtered : all;
+    dbg('queryPriceEls: count=' + result.length + (filtered.length === 0 ? ' (unfiltered fallback)' : ''), result);
+    return result;
   }
 
-  // Last price string we applied. Used by the MutationObserver to distinguish
-  // our own writes from the theme's — see watchPriceElements().
+  // Last formatted price string we applied. Used by the MutationObserver to
+  // distinguish our own DOM writes from the theme's — see watchPriceElements().
   var pm_lastAppliedPrice = null;
 
   // ===========================================================================
@@ -568,21 +629,25 @@
       var selectedBase = getSelectedBaseVariantGid();
       var assignedPrice = null;
 
+      dbg('applyExperimentPrices: selectedBase=', selectedBase, 'mapKeys=', Object.keys(assignmentMap));
+
       if (selectedBase && assignmentMap[selectedBase]) {
         assignedPrice = assignmentMap[selectedBase].price;
+        dbg('matched selectedBase, price=', assignedPrice);
       } else if (!selectedBase) {
         var firstBase = Object.keys(assignmentMap)[0];
         if (firstBase) assignedPrice = assignmentMap[firstBase].price;
+        dbg('no selectedBase, using first, price=', assignedPrice);
+      } else {
+        dbg('selectedBase not in assignmentMap — leaving price unchanged');
       }
-      // If selectedBase is known but has no experiment variant, leave alone.
+
       if (!assignedPrice) return;
 
       var formatted = formatMoney(assignedPrice);
-      // Record what we're about to write so the MutationObserver can
-      // distinguish our writes from the theme's.
       pm_lastAppliedPrice = formatted;
+      dbg('writing price "' + formatted + '" to', queryPriceEls().length, 'elements');
 
-      // Only write to price elements in the product section.
       queryPriceEls().forEach(function (el) {
         if (el.textContent !== formatted) el.textContent = formatted;
       });
@@ -693,7 +758,26 @@
         hidePriceEls();
         scheduleReapply(50);
       });
-      sectionObserver.observe(getProductSection(), { childList: true, subtree: true });
+
+      // Find the best ancestor to watch for section re-renders: walk up from
+      // the cart form looking for a <section> or element with "product" in
+      // its id/class. Fall back to document.body.
+      var sectionRoot = (function () {
+        var form = document.querySelector('form[action*="/cart/add"]');
+        if (form) {
+          var node = form.parentElement;
+          for (var d = 0; d < 8 && node && node !== document.body; d++) {
+            var tag = (node.tagName || '').toLowerCase();
+            if (tag === 'section') return node;
+            if (/product/i.test(node.id || '') || /product/i.test(node.className || '')) return node;
+            node = node.parentElement;
+          }
+          return form.parentElement || document.body;
+        }
+        return document.body;
+      })();
+      dbg('sectionObserver root:', sectionRoot.tagName, sectionRoot.id || sectionRoot.className || '');
+      sectionObserver.observe(sectionRoot, { childList: true, subtree: true });
 
     } catch (e) {
       console.warn('[ProfitMax] watchPriceElements error:', e);
@@ -709,31 +793,40 @@
       // =======================================================================
       // SECTION 3 — LOAD EXPERIMENT CONFIG
       //
-      // Path 1: window.__pmConfig — embedded by the Liquid head snippet,
-      //   available synchronously with zero network latency.
+      // Path 1 (fast): window.__pmConfig — embedded by the Liquid head snippet,
+      //   zero network latency. Used only when the product IS present; absence
+      //   is NOT treated as "no experiment" because the metafield may be stale
+      //   (e.g. an experiment that predates the first sync).
       //
-      // Path 2: fetch from /api/experiment-config — fallback when the head
-      //   snippet is absent (e.g. merchant hasn't redeployed yet, or the
-      //   metafield hasn't synced after a fresh install).
+      // Path 2 (fallback): fetch /api/experiment-config — used whenever the
+      //   product was not found via the inline config.
       // =======================================================================
 
       var assignments = null;
       var experimentDatetimeSubmitted = null;
 
-      var pmConfig = window.__pmConfig;
-      var pmPageId = window.__pmPageProductId; // numeric string set by Liquid
-      var pmProductGid = pmPageId ? buildGid('Product', pmPageId) : productGid;
-
-      if (pmConfig && typeof pmConfig === 'object') {
-        var inlineCfg = pmConfig[pmProductGid] || pmConfig[productGid];
-        if (inlineCfg && Array.isArray(inlineCfg.assignments) && inlineCfg.assignments.length > 0) {
-          assignments = inlineCfg.assignments;
-          experimentDatetimeSubmitted = inlineCfg.experimentDatetimeSubmitted;
+      // Try fast path.
+      try {
+        var pmConfig = window.__pmConfig;
+        if (pmConfig && typeof pmConfig === 'object') {
+          var pmPageId = window.__pmPageProductId; // numeric ID from Liquid
+          var pmGid = pmPageId ? buildGid('Product', pmPageId) : productGid;
+          dbg('checking __pmConfig for', pmGid, '(also trying', productGid, ')');
+          var inlineCfg = pmConfig[pmGid] || pmConfig[productGid];
+          if (inlineCfg && Array.isArray(inlineCfg.assignments) && inlineCfg.assignments.length > 0) {
+            assignments = inlineCfg.assignments;
+            experimentDatetimeSubmitted = inlineCfg.experimentDatetimeSubmitted;
+            dbg('config from __pmConfig, assignments:', assignments.length);
+          } else {
+            dbg('product not in __pmConfig, falling back to API fetch');
+          }
+        } else {
+          dbg('__pmConfig absent, using API fetch');
         }
-        // __pmConfig present but product not in it → no active experiment.
-        if (!assignments) { revealPrices(); return; }
-      } else {
-        // Path 2: fetch from API.
+      } catch (e) { /* ignore — fall through to API fetch */ }
+
+      // Fall back to API when product not found in inline config.
+      if (!assignments) {
         var configUrl =
           'https://' + shop + '/apps/profit-max/api/experiment-config' +
           '?productId=' + encodeURIComponent(productGid) +
@@ -758,9 +851,13 @@
           revealPrices(); return;
         }
 
-        if (config.active === false) { revealPrices(); return; }
+        if (config.active === false) {
+          dbg('API says no active experiment for this product');
+          revealPrices(); return;
+        }
         assignments = config.assignments;
         experimentDatetimeSubmitted = config.experimentDatetimeSubmitted;
+        dbg('config from API fetch, assignments:', assignments.length);
       }
 
       if (!Array.isArray(assignments) || assignments.length === 0) {
