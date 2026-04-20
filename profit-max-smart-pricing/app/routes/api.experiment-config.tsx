@@ -68,6 +68,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ExperimentDatetimeSubmitted: activeLive.ExperimentDatetimeSubmitted,
       ProductId: productId,
     },
+    orderBy: [
+      { ProductId: 'asc' },
+      { BaseVariantId: 'asc' },
+      { Price: 'asc' }
+    ],
     select: {
       BaseVariantId: true,
       ExperimentVariantId: true,

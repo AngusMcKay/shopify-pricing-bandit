@@ -70,14 +70,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // Fetch all assignment rows for all active experiments in one query.
-  // Use OR conditions keyed by (merchantId, datetime) pairs.
-  const datetimes = activeLives.map((l) => l.ExperimentDatetimeSubmitted);
-
+  // Use per-product (ProductId, datetime) pairs to avoid leaking setup rows
+  // from unrelated products that happen to share an activation datetime.
   const setups = await db.experimentSetup.findMany({
     where: {
       MerchantId: merchantId,
-      ExperimentDatetimeSubmitted: { in: datetimes },
+      OR: activeLives.map((l) => ({
+        ProductId: l.ProductId,
+        ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
+      })),
     },
+    orderBy: [
+      { ProductId: 'asc' },
+      { BaseVariantId: 'asc' },
+      { Price: 'asc' }
+    ],
     select: {
       ProductId: true,
       BaseVariantId: true,

@@ -233,8 +233,10 @@
           dbg('cache hit for', cacheKey);
           return { map: parsed.map, isNew: false };
         }
-        dbg('cache miss for', cacheKey, '— fingerprint mismatch');
+        dbg('cache miss for', cacheKey, '— stored fp:', parsed && parsed._fp ? parsed._fp.substring(0, 60) + '...' : 'none', '| new fp:', fp.substring(0, 60) + '...');
       } catch (e) { /* corrupt — re-draw */ }
+    } else {
+      dbg('cache empty for', cacheKey);
     }
 
     var byBase = {};
@@ -753,25 +755,15 @@
   }
 
   function hidePriceEls() {
-    queryPriceEls().forEach(function (el) { el.style.opacity = '0'; });
+    document.documentElement.classList.remove('pm-prices-ready');
   }
 
   function showPriceEls() {
-    queryPriceEls().forEach(function (el) { el.style.opacity = ''; });
+    document.documentElement.classList.add('pm-prices-ready');
   }
 
   function watchPriceElements(assignmentMap) {
     try {
-      var revealTimer = null;
-
-      function scheduleReapply(delayMs) {
-        clearTimeout(revealTimer);
-        revealTimer = setTimeout(function () {
-          applyExperimentPrices(assignmentMap);
-          showPriceEls();
-        }, delayMs);
-      }
-
       // -----------------------------------------------------------------------
       // (a) MutationObserver on price elements within the product section.
       //
@@ -788,10 +780,12 @@
         });
         if (allOurs) return;
 
-        // Theme just overwrote a price — hide immediately so the base price
-        // is never visible, then reapply experiment price.
+        // Theme just overwrote a price — hide, rewrite, reveal synchronously.
+        // No delay: the observer fires after the theme's DOM write but before
+        // the browser paints, so this prevents the base price from ever appearing.
         hidePriceEls();
-        scheduleReapply(50);
+        applyExperimentPrices(assignmentMap);
+        showPriceEls();
       });
 
       queryPriceEls().forEach(function (el) {
@@ -857,11 +851,13 @@
         }
         if (!hasNewPriceEls) return;
 
-        // Invalidate cached price elements and re-attach observer.
+        // Invalidate cached price elements, re-attach observer, reapply synchronously.
+        hidePriceEls();
         queryPriceEls(true).forEach(function (el) {
           priceObserver.observe(el, { childList: true, subtree: true, characterData: true });
         });
-        scheduleReapply(50);
+        applyExperimentPrices(assignmentMap);
+        showPriceEls();
       });
 
       // Find the best ancestor to watch for section re-renders: walk up from
