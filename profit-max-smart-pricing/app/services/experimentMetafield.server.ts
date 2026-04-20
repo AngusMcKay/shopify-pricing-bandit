@@ -46,6 +46,15 @@ const METAFIELD_DEFINITION_CREATE = `#graphql
   }
 `;
 
+const METAFIELD_DEFINITION_UPDATE = `#graphql
+  mutation MetafieldDefinitionUpdate($definition: MetafieldDefinitionUpdateInput!) {
+    metafieldDefinitionUpdate(definition: $definition) {
+      updatedDefinition { id access { storefront } }
+      userErrors { field message code }
+    }
+  }
+`;
+
 const GET_SHOP_ID = `#graphql
   query { shop { id } }
 `;
@@ -56,12 +65,13 @@ interface ShopIdResponse {
 
 /**
  * Ensure the metafield definition exists with PUBLIC_READ storefront access.
- * Idempotent — safe to call on every activate. Errors are swallowed because a
- * definition conflict (already exists) returns a userError, not a throw.
+ * Idempotent — safe to call on every activate. If the definition already exists
+ * (TAKEN error), updates its access to PUBLIC_READ in case it was created with
+ * different access or Shopify downgraded it.
  */
 export async function ensureMetafieldDefinition(admin: AdminClient): Promise<void> {
   try {
-    await admin.graphql(METAFIELD_DEFINITION_CREATE, {
+    const createRes = await admin.graphql(METAFIELD_DEFINITION_CREATE, {
       variables: {
         definition: {
           namespace: PM_METAFIELD_NAMESPACE,
@@ -77,8 +87,30 @@ export async function ensureMetafieldDefinition(admin: AdminClient): Promise<voi
         },
       },
     });
+
+    const createJson = await createRes.json() as {
+      data?: { metafieldDefinitionCreate?: { userErrors?: Array<{ code?: string }> } };
+    };
+    const createErrors = createJson.data?.metafieldDefinitionCreate?.userErrors ?? [];
+    const alreadyExists = createErrors.some((e) => e.code === "TAKEN");
+
+    if (alreadyExists) {
+      // Definition exists but may have wrong access — update it.
+      await admin.graphql(METAFIELD_DEFINITION_UPDATE, {
+        variables: {
+          definition: {
+            namespace: PM_METAFIELD_NAMESPACE,
+            key: PM_METAFIELD_KEY,
+            ownerType: "SHOP",
+            access: {
+              storefront: "PUBLIC_READ",
+            },
+          },
+        },
+      });
+      console.log("[ProfitMax] Updated metafield definition access to PUBLIC_READ");
+    }
   } catch (e) {
-    // Already exists or permission error — either way, continue.
     console.warn("[ProfitMax] ensureMetafieldDefinition:", e);
   }
 }
@@ -103,12 +135,13 @@ export async function syncExperimentMetafield(
     let configValue: Record<string, unknown> = {};
 
     if (activeLives.length > 0) {
-      const datetimes = activeLives.map((l) => l.ExperimentDatetimeSubmitted);
-
       const setups = await db.experimentSetup.findMany({
         where: {
           MerchantId: merchantId,
-          ExperimentDatetimeSubmitted: { in: datetimes },
+          OR: activeLives.map((l) => ({
+            ProductId: l.ProductId,
+            ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
+          })),
         },
         select: {
           ProductId: true,
