@@ -114,11 +114,14 @@ model ExperimentSetup {
   ExperimentSubset            String?
   Price                       Decimal
   Probability                 Decimal
+  IsActive                    Boolean  @default(true)
+  BanditRound                 Int      @default(0)
 
   merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
 
   @@index([MerchantId])
   @@index([ExperimentDatetimeSubmitted])
+  @@index([ProductId, IsActive])
 }
 
 // ---------------------------------------------------------------------------

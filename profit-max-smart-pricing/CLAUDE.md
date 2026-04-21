@@ -163,7 +163,7 @@ PostgreSQL via Prisma. Key tables:
 | Table | Purpose |
 |-------|---------|
 | `ExperimentLive` | One row per active/paused/cancelled experiment per product. Status field controls visibility. |
-| `ExperimentSetup` | Assignment rows: baseVariantId → experimentVariantId + price + probability. These are what the storefront JS uses. |
+| `ExperimentSetup` | Assignment rows: baseVariantId → experimentVariantId + price + probability. `IsActive` (default true) marks current rows; `BanditRound` (default 0) tracks which optimization round created them. Storefront queries filter `IsActive: true`. Historical rows preserved with `IsActive: false` for analytics. |
 | `ExperimentMerchantInputs` | EAV table storing merchant's experiment parameters (min/max price, optimization mode, etc.) |
 | `ExperimentMerchantProductSnapshot` | Point-in-time snapshot of product/variant data at experiment creation |
 | `BanditParameters` | Thompson Sampling parameters per variant (mean, variance, impressions, purchases) |
@@ -196,6 +196,17 @@ PostgreSQL via Prisma. Key tables:
 ```
 - Synced on every activate/cancel/pause via `syncExperimentMetafield()`
 - Read by embed block Liquid at render time: `shop.metafields.profit_max_app.experiment_config`
+
+### Bandit Update Flow (Python scripts, daily)
+1. Query `ExperimentLive` for all `Status: "Active"` experiments
+2. Query `Impressions` + `Purchases` since last run
+3. Run Thompson Sampling / contextual bandit update
+4. In a transaction:
+   - Set `IsActive = false` on current `ExperimentSetup` rows for the product (preserves history)
+   - Insert new rows with updated probabilities, `IsActive = true`, `BanditRound = prev + 1`
+   - Update `BanditParameters` (and append to `BanditParametersHistory`)
+5. Trigger metafield sync so the storefront config updates
+6. (Future) May also create new Shopify variants for price exploration
 
 ## Config & Scopes
 

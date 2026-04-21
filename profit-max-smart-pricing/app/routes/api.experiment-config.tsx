@@ -67,6 +67,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       MerchantId: merchantId,
       ExperimentDatetimeSubmitted: activeLive.ExperimentDatetimeSubmitted,
       ProductId: productId,
+      IsActive: true,
     },
     orderBy: [
       { ProductId: 'asc' },

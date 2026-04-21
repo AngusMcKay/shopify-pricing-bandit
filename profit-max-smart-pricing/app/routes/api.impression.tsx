@@ -141,6 +141,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: {
       MerchantId: body.MerchantId,
       ExperimentVariantId: body.ExperimentVariantId,
+      IsActive: true,
       ExperimentDatetimeSubmitted: {
         in: await db.experimentLive
           .findMany({

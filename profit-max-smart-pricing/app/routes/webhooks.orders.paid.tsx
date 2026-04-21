@@ -108,6 +108,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: {
         MerchantId: shop,
         ExperimentVariantId: variantGid,
+        IsActive: true,
         ExperimentDatetimeSubmitted: { in: activeDatetimes },
       },
       select: {

@@ -28,7 +28,7 @@ fieldset:has([name*="_pm_price"]),li:has([name*="_pm_price"]){display:none!impor
 .price,
 [data-product-price],
 .price-item,
-.product__price{opacity:0!important;transition:opacity .15s ease}
+.product__price{opacity:0!important}
 html.pm-prices-ready .price__regular,
 html.pm-prices-ready .price,
 html.pm-prices-ready [data-product-price],
@@ -39,10 +39,10 @@ html.pm-prices-ready .product__price{opacity:1!important}
 {%- endif -%}
 
 {%- comment -%} --- Inline experiment config from shop metafield --- {%- endcomment -%}
-{%- assign pm_cfg = shop.metafields.profit_max_app.experiment_config -%}
+{%- assign pm_cfg_raw = shop.metafields.profit_max_app.experiment_config.value -%}
 <script>
-{%- if pm_cfg != blank -%}
-window.__pmConfig={{ pm_cfg | json }};
+{%- if pm_cfg_raw != blank -%}
+window.__pmConfig={{ pm_cfg_raw | json }};
 {%- else -%}
 window.__pmConfig={};
 {%- endif -%}

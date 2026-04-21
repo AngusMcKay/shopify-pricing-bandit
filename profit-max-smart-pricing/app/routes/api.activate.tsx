@@ -248,12 +248,15 @@ type SessionType = Awaited<ReturnType<typeof authenticate.admin>>["session"];
 async function cleanupShopifyVariants(
   admin: AdminClient,
   merchantId: string,
-  datetimes: Date[],
+  activeLives: Array<{ ExperimentDatetimeSubmitted: Date; ProductId: string }>,
 ): Promise<void> {
   const setups = await db.experimentSetup.findMany({
     where: {
       MerchantId: merchantId,
-      ExperimentDatetimeSubmitted: { in: datetimes },
+      OR: activeLives.map((l) => ({
+        ProductId: l.ProductId,
+        ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
+      })),
     },
     select: { ProductId: true, ExperimentVariantId: true },
   });
@@ -356,7 +359,19 @@ async function handleActivate(
     // Paused experiments are treated the same as Active for replacement purposes
     // — they still have live Shopify variants that need to be cleaned up.
     // -------------------------------------------------------------------------
-    let dbBaseVariantIds = new Set<string>();
+    // Collect ALL known experiment variant IDs for this product (any status)
+    // so we can clean up orphans from previous partial cancellations.
+    const allSetups = await db.experimentSetup.findMany({
+      where: {
+        MerchantId: merchantId,
+        ProductId: config.productId,
+      },
+      select: { BaseVariantId: true, ExperimentVariantId: true },
+    });
+    const dbBaseVariantIds = new Set(allSetups.map((s) => s.BaseVariantId));
+    const dbExperimentVariantIds = new Set(allSetups.map((s) => s.ExperimentVariantId));
+
+    // Cancel any Active/Paused experiment for this product.
     const existingExperiment = await db.experimentLive.findFirst({
       where: {
         MerchantId: merchantId,
@@ -367,15 +382,6 @@ async function handleActivate(
     });
 
     if (existingExperiment) {
-      const existingSetups = await db.experimentSetup.findMany({
-        where: {
-          MerchantId: merchantId,
-          ExperimentDatetimeSubmitted: existingExperiment.ExperimentDatetimeSubmitted,
-        },
-        select: { BaseVariantId: true },
-      });
-      dbBaseVariantIds = new Set(existingSetups.map((s) => s.BaseVariantId));
-
       await db.experimentLive.updateMany({
         where: {
           MerchantId: merchantId,
@@ -393,8 +399,12 @@ async function handleActivate(
     const experimentVariantIds = existingVariants
       .filter((v) => {
         if (dbBaseVariantIds.has(v.id)) return false;
+        // Match by _pm_price option (normal case)
         const pmOpt = v.selectedOptions.find((o) => o.name === "_pm_price");
-        return pmOpt != null && pmOpt.value !== "_base";
+        if (pmOpt != null && pmOpt.value !== "_base") return true;
+        // Match by DB record (orphaned variants whose _pm_price option was
+        // already deleted in a previous partial cleanup)
+        return dbExperimentVariantIds.has(v.id);
       })
       .map((v) => v.id);
 
@@ -660,9 +670,9 @@ async function handleCancel(
     return Response.json({ success: true, cancelled: 0 }, { status: 200 });
   }
 
-  const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
+  await cleanupShopifyVariants(admin, merchantId, activeLive);
 
-  await cleanupShopifyVariants(admin, merchantId, activeDatetimes);
+  const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
 
   await db.experimentLive.updateMany({
     where: {
@@ -703,9 +713,9 @@ async function handleCancelProducts(
     return Response.json({ success: true, cancelled: 0 }, { status: 200 });
   }
 
-  const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
+  await cleanupShopifyVariants(admin, merchantId, activeLive);
 
-  await cleanupShopifyVariants(admin, merchantId, activeDatetimes);
+  const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
 
   await db.experimentLive.updateMany({
     where: {

@@ -138,6 +138,7 @@ export async function syncExperimentMetafield(
       const setups = await db.experimentSetup.findMany({
         where: {
           MerchantId: merchantId,
+          IsActive: true,
           OR: activeLives.map((l) => ({
             ProductId: l.ProductId,
             ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
