@@ -16,7 +16,7 @@ database.sqlite
 .env
 .env.*
 
-
+*_pycache_*
 
 
 

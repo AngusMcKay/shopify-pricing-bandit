@@ -6,11 +6,6 @@ type AdminClient = Awaited<ReturnType<typeof authenticate.admin>>["admin"];
 // Types
 // ---------------------------------------------------------------------------
 
-interface ThemeAppExtension {
-  id: string;
-  enabled: boolean;
-}
-
 interface PublishedThemeResponse {
   data: {
     themes: {
@@ -22,12 +17,17 @@ interface PublishedThemeResponse {
   };
 }
 
-interface ThemeExtensionsResponse {
+interface ThemeFilesResponse {
   data: {
     theme: {
       id: string;
-      appExtensions?: {
-        nodes: ThemeAppExtension[];
+      files: {
+        edges: Array<{
+          node: {
+            filename: string;
+            body: { content?: string } | null;
+          };
+        }>;
       };
     } | null;
   };
@@ -48,21 +48,76 @@ const GET_PUBLISHED_THEME_QUERY = `#graphql
   }
 `;
 
-// The themeAppExtensions field returns app embed blocks installed on the theme.
-// We filter by our extension handle to check if it's enabled.
-const GET_THEME_APP_EXTENSIONS_QUERY = `#graphql
-  query GetThemeAppExtensions($themeId: ID!) {
+// App embed blocks are stored in config/settings_data.json under current.blocks.
+// Each key is a shopify://apps/... URI; the value has a "disabled" boolean.
+// We check for any block whose key contains our extension handle and is not disabled.
+const GET_THEME_SETTINGS_DATA_QUERY = `#graphql
+  query GetThemeSettingsData($themeId: ID!) {
     theme(id: $themeId) {
       id
-      appExtensions: themeAppExtensions {
-        nodes {
-          id
-          enabled
+      files(filenames: ["config/settings_data.json"]) {
+        edges {
+          node {
+            filename
+            body {
+              ... on OnlineStoreThemeFileBodyText {
+                content
+              }
+            }
+          }
         }
       }
     }
   }
 `;
+
+// The extension handle as defined in shopify.extension.toml.
+const EMBED_EXTENSION_HANDLE = "profit-max-embed";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isEmbedEnabledInSettingsData(json: string): boolean {
+  let data: Record<string, unknown>;
+  try {
+    // settings_data.json starts with a /* ... */ comment block — strip it before parsing.
+    const stripped = json.replace(/^\/\*[\s\S]*?\*\/\s*/, "");
+    data = JSON.parse(stripped);
+  } catch {
+    console.warn("[ProfitMax] Could not parse settings_data.json");
+    return false;
+  }
+
+  const blocks = (data as { current?: { blocks?: Record<string, { type?: string; disabled?: boolean }> } })
+    ?.current?.blocks;
+
+  if (!blocks) return false;
+
+  return Object.values(blocks).some((block) => {
+    return block.type?.includes(EMBED_EXTENSION_HANDLE) && block.disabled !== true;
+  });
+}
+
+async function checkEmbedOnTheme(
+  admin: AdminClient,
+  themeGid: string,
+): Promise<boolean> {
+  const extRes = await admin.graphql(GET_THEME_SETTINGS_DATA_QUERY, {
+    variables: { themeId: themeGid },
+  });
+  const extJson = (await extRes.json()) as ThemeFilesResponse;
+  const edges = extJson.data.theme?.files?.edges ?? [];
+  const settingsFile = edges.find((e) => e.node.filename === "config/settings_data.json");
+  const content = (settingsFile?.node.body as { content?: string } | null)?.content;
+
+  if (!content) {
+    console.warn("[ProfitMax] settings_data.json not found or empty — assuming embed disabled");
+    return false;
+  }
+
+  return isEmbedEnabledInSettingsData(content);
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -79,7 +134,6 @@ export async function isEmbedEnabledOnPublishedTheme(
   admin: AdminClient,
 ): Promise<boolean> {
   try {
-    // Step 1: find the published theme ID.
     const themesRes = await admin.graphql(GET_PUBLISHED_THEME_QUERY);
     const themesJson = (await themesRes.json()) as PublishedThemeResponse;
     const publishedTheme = themesJson.data.themes.nodes.find(
@@ -91,19 +145,9 @@ export async function isEmbedEnabledOnPublishedTheme(
       return true;
     }
 
-    // Step 2: check whether any app extension on that theme is enabled.
-    // The themeAppExtensions field returns only extensions belonging to this app,
-    // so we just need to check that at least one is enabled.
-    const extRes = await admin.graphql(GET_THEME_APP_EXTENSIONS_QUERY, {
-      variables: { themeId: publishedTheme.id },
-    });
-    const extJson = (await extRes.json()) as ThemeExtensionsResponse;
-    const extensions = extJson.data.theme?.appExtensions?.nodes ?? [];
-
-    return extensions.some((ext) => ext.enabled);
+    return await checkEmbedOnTheme(admin, publishedTheme.id);
   } catch (e) {
     console.warn("[ProfitMax] isEmbedEnabledOnPublishedTheme failed — assuming enabled:", e);
-    // Safe fallback: don't block activation on an API error.
     return true;
   }
 }
@@ -117,13 +161,7 @@ export async function isEmbedEnabledOnTheme(
   themeGid: string,
 ): Promise<boolean> {
   try {
-    const extRes = await admin.graphql(GET_THEME_APP_EXTENSIONS_QUERY, {
-      variables: { themeId: themeGid },
-    });
-    const extJson = (await extRes.json()) as ThemeExtensionsResponse;
-    const extensions = extJson.data.theme?.appExtensions?.nodes ?? [];
-
-    return extensions.some((ext) => ext.enabled);
+    return await checkEmbedOnTheme(admin, themeGid);
   } catch (e) {
     console.warn(`[ProfitMax] isEmbedEnabledOnTheme(${themeGid}) failed — assuming enabled:`, e);
     return true;
