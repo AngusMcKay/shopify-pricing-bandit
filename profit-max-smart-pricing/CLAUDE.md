@@ -33,6 +33,15 @@ A Shopify embedded app that runs automated price experiments (A/B testing with T
 │    blocks/profit-max-embed.liquid  — Liquid in <head>    │
 │    assets/profit-max.js            — deferred JS          │
 └─────────────────────────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────┐
+│  Bandit Optimisation (Python cron service)               │
+│  bandit/                                                 │
+│    run_bandit.py          — entry point (Railway cron)    │
+│    thompson_sampling.py   — algorithm (swappable)         │
+│    db.py                  — DB queries (psycopg2)         │
+│    sync_metafield.py      — Shopify metafield update      │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Key Files
@@ -42,6 +51,16 @@ A Shopify embedded app that runs automated price experiments (A/B testing with T
 - **`extensions/profit-max-embed/blocks/profit-max-embed.liquid`** — App embed block with `target: "head"`. Contains anti-flicker CSS, experiment config injection via shop metafield, and page-specific product ID injection via Liquid. This is the first thing that executes on any storefront page.
 
 - **`extensions/profit-max-embed/assets/profit-max.js`** — The main storefront script (~1000 lines). Handles: visitor ID (cookie+session), page type detection, experiment config loading (inline from `__pmConfig` or API fallback), weighted-random visitor assignment, price display, variant UI suppression, add-to-cart interception, variant-switch watching (MutationObserver), impression tracking, and collection page batch pricing. Debug mode via `?pm_debug=1`.
+
+### Bandit Optimisation
+
+- **`bandit/run_bandit.py`** — Entry point. Fetches all active experiments, runs Thompson Sampling per experiment, writes updated probabilities to ExperimentSetup (deactivating old rows, inserting new ones with incremented BanditRound), updates BanditParameters + history, then syncs the shop metafield. Supports `--dry-run` flag. Designed to run as a Railway cron service (daily).
+
+- **`bandit/thompson_sampling.py`** — The algorithm module (~100 lines). Models each price point's conversion rate as Beta(purchases+1, impressions-purchases+1). Runs 10k Monte Carlo simulations to compute win probabilities. Supports both "revenue" (price × conversion) and "profit" ((price−cost) × conversion) modes. Enforces a 1% minimum probability floor to prevent premature convergence. Swappable — replacing this module changes the algorithm without touching infrastructure.
+
+- **`bandit/db.py`** — All database queries and writes. Uses psycopg2 directly against the same PostgreSQL database as the Node app. Reads the Shopify access token from the Session table for metafield sync.
+
+- **`bandit/sync_metafield.py`** — Rebuilds and upserts the shop metafield via the Shopify Admin GraphQL API. Mirrors the logic in `experimentMetafield.server.ts`. Called after each bandit update cycle so the storefront picks up new probabilities.
 
 ### Backend Services
 
