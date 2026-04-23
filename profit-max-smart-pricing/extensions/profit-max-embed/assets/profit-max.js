@@ -352,15 +352,12 @@
    * Used on collection pages and for recommendation sections on product pages.
    */
   function applyCardPrices(configMap) {
-    var allCardEls = document.querySelectorAll('[data-product-id]');
-    dbg('applyCardPrices: configMap keys=', Object.keys(configMap), 'elements with data-product-id=', allCardEls.length);
-
     var seenNumIds = {};
-    allCardEls.forEach(function (card) {
-      var numId = card.getAttribute('data-product-id');
-      if (!numId) return;
-      if (seenNumIds[numId]) return;
 
+    // Shared: given a numeric product ID and a container element, build/load
+    // assignment and write the formatted price into price elements within it.
+    function applyToCard(numId, containerEl) {
+      if (seenNumIds[numId]) return;
       var gid = buildGid('Product', numId);
       var productCfg = configMap[gid];
       var assignments = productCfg && productCfg.assignments;
@@ -375,12 +372,43 @@
       if (!firstBase) { seenNumIds[numId] = true; return; }
       var formatted = formatMoney(result.map[firstBase].price);
 
-      var priceEls = card.querySelectorAll(CARD_PRICE_SELECTORS);
+      var priceEls = containerEl.querySelectorAll(CARD_PRICE_SELECTORS);
       if (priceEls.length > 0) {
         dbg('card', numId, '→ price=', formatted, 'price els found=', priceEls.length);
         priceEls.forEach(function (el) { el.textContent = formatted; });
         seenNumIds[numId] = true;
       }
+    }
+
+    // Path A: [data-product-id] attributes — Dawn and most Shopify themes.
+    var allCardEls = document.querySelectorAll('[data-product-id]');
+    dbg('applyCardPrices: configMap keys=', Object.keys(configMap), 'elements with data-product-id=', allCardEls.length);
+
+    allCardEls.forEach(function (card) {
+      var numId = card.getAttribute('data-product-id');
+      if (numId) applyToCard(numId, card);
+    });
+
+    // Path B: ID-based discovery for themes that don't emit [data-product-id].
+    // Dawn-family themes embed the numeric product ID at the end of element IDs,
+    // e.g. "CardLink-template--XYZ__product-grid-15019614732658". We query for
+    // an element whose ID ends with "-{numericId}", walk up to the card wrapper,
+    // then apply prices to price elements within that wrapper.
+    var configNumIds = Object.keys(configMap).map(numericIdFromGid);
+    configNumIds.forEach(function (numId) {
+      if (seenNumIds[numId]) return;
+      var anchor = document.querySelector('[id$="-' + numId + '"]');
+      if (!anchor) return;
+      // Walk up to a card/wrapper container.
+      var card = anchor.parentElement;
+      for (var d = 0; d < 8 && card && card !== document.body; d++) {
+        var cls = card.className || '';
+        if (/card-wrapper|product-card|grid__item/i.test(cls)) break;
+        card = card.parentElement;
+      }
+      if (!card || card === document.body) return;
+      dbg('applyCardPrices path B: found card for', numId, 'via id selector');
+      applyToCard(numId, card);
     });
   }
 
@@ -443,6 +471,13 @@
 
         if (productGidSet.size === 0) {
           dbg('collection fetch: no products queued — nothing to fetch');
+          // If we have inline config, try Path B card discovery as a last resort.
+          // This handles home pages and other non-collection list pages where the
+          // theme doesn't emit [data-product-id] or __pmPageProductIds.
+          if (pmConfigResolved && Object.keys(pmConfigResolved).length > 0) {
+            dbg('collection: attempting path B card discovery with inline config');
+            applyCardPrices(pmConfigResolved);
+          }
           return;
         }
 
@@ -986,13 +1021,11 @@
       var isNewAssignment = result.isNew;
 
       // Build the reverse map: experiment variant numeric ID → base variant GID.
-      // This lets getSelectedBaseVariantGid() handle the case where a theme's
-      // picker (holding a stale reference to the unfiltered variants array) has
-      // put an experiment variant ID into input[name="id"].
-      var baseGids = Object.keys(assignmentMap);
-      for (var ri = 0; ri < baseGids.length; ri++) {
-        var expNumId = numericIdFromGid(assignmentMap[baseGids[ri]].experimentVariantId);
-        expToBaseGid[expNumId] = baseGids[ri];
+      // Map ALL experiment variants (not just the chosen one) so that if the
+      // theme's picker defaults to an unchosen experiment variant before our
+      // suppress code runs, getSelectedBaseVariantGid() can still resolve it.
+      for (var ri = 0; ri < assignments.length; ri++) {
+        expToBaseGid[numericIdFromGid(assignments[ri].experimentVariantId)] = assignments[ri].baseVariantId;
       }
 
       // =======================================================================
@@ -1014,6 +1047,17 @@
         var expGid  = assignmentMap[baseGid].experimentVariantId;
         variantSwapMap[numericIdFromGid(baseGid)] = numericIdFromGid(expGid);
         variantSwapMap[baseGid] = expGid;
+      }
+      // Also map unchosen experiment variants → the chosen experiment variant.
+      // If the theme's picker defaulted to an unchosen experiment variant (because
+      // suppress code ran too late), add-to-cart still routes to the correct variant.
+      for (var q2 = 0; q2 < assignments.length; q2++) {
+        var aBaseNumId = numericIdFromGid(assignments[q2].baseVariantId);
+        var aExpNumId  = numericIdFromGid(assignments[q2].experimentVariantId);
+        var chosenExpNumId = variantSwapMap[aBaseNumId];
+        if (chosenExpNumId && aExpNumId !== chosenExpNumId) {
+          variantSwapMap[aExpNumId] = chosenExpNumId;
+        }
       }
 
       document.addEventListener('submit', function (event) {
@@ -1117,12 +1161,16 @@
       // =======================================================================
 
       try {
-        var recoCards = document.querySelectorAll('[data-product-id]');
         var recoProductIds = new Set();
-        recoCards.forEach(function (el) {
+        // Path A: [data-product-id] attributes.
+        document.querySelectorAll('[data-product-id]').forEach(function (el) {
           var id = el.getAttribute('data-product-id');
-          // Exclude the main product — it's already handled above.
           if (id && id !== productNumericId) recoProductIds.add(buildGid('Product', id));
+        });
+        // Path B: ID-pattern for themes without [data-product-id] (e.g. Dawn Plus).
+        document.querySelectorAll('[id*="__product-grid-"],[id*="CardLink--"]').forEach(function (el) {
+          var m = el.id.match(/__product-grid-(\d+)$/) || el.id.match(/CardLink--(\d+)$/);
+          if (m && m[1] !== productNumericId) recoProductIds.add(buildGid('Product', m[1]));
         });
 
         if (recoProductIds.size > 0) {
@@ -1183,7 +1231,9 @@
               var node = added[ai];
               if (node.nodeType !== 1) continue;
               if ((node.getAttribute && node.getAttribute('data-product-id')) ||
-                  (node.querySelector && node.querySelector('[data-product-id]'))) {
+                  (node.querySelector && node.querySelector('[data-product-id]')) ||
+                  (node.querySelector && node.querySelector('[id*="__product-grid-"],[id*="CardLink--"]')) ||
+                  (node.id && (/(__product-grid-|CardLink--)\d+$/.test(node.id)))) {
                 hasCards = true;
                 break;
               }
@@ -1200,6 +1250,10 @@
             document.querySelectorAll('[data-product-id]').forEach(function (el) {
               var id = el.getAttribute('data-product-id');
               if (id && id !== productNumericId) lazyIds.add(buildGid('Product', id));
+            });
+            document.querySelectorAll('[id*="__product-grid-"],[id*="CardLink--"]').forEach(function (el) {
+              var m = el.id.match(/__product-grid-(\d+)$/) || el.id.match(/CardLink--(\d+)$/);
+              if (m && m[1] !== productNumericId) lazyIds.add(buildGid('Product', m[1]));
             });
             if (lazyIds.size === 0) return;
 

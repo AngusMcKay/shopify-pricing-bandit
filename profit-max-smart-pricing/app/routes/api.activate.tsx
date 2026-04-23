@@ -517,7 +517,9 @@ async function handleActivate(
       for (const price of pricePoints) {
         variantInputs.push({
           price: price.toFixed(2),
-          inventoryPolicy: baseVariant.inventoryPolicy,
+          // Always CONTINUE so experiment variants can be added to cart regardless
+          // of inventory level — they're virtual price-test variants, not stock items.
+          inventoryPolicy: "CONTINUE",
           optionValues: [
             ...inheritedOptions,
             { optionName: "_pm_price", name: price.toFixed(2) },
