@@ -339,6 +339,30 @@ def update_bandit_params(
             ))
 
 
+def fetch_product_handles_for_merchant(
+    conn,
+    merchant_id: str,
+) -> dict[str, str]:
+    """
+    Get the most recent ProductHandle for each active product for a merchant.
+    Returns a dict of product_id → handle (only entries where handle is not null).
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (s."ProductId") s."ProductId", s."ProductHandle"
+            FROM "ExperimentMerchantProductSnapshot" s
+            JOIN "ExperimentLive" el
+              ON s."MerchantId" = el."MerchantId"
+             AND s."ProductId" = el."ProductId"
+             AND s."ExperimentDatetimeSubmitted" = el."ExperimentDatetimeSubmitted"
+            WHERE s."MerchantId" = %s
+              AND el."Status" = 'Active'
+              AND s."ProductHandle" IS NOT NULL
+            ORDER BY s."ProductId", s."ExperimentDatetimeSubmitted" DESC
+        """, (merchant_id,))
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
 def fetch_all_active_setups_for_merchant(
     conn,
     merchant_id: str,

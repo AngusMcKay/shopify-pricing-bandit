@@ -14,7 +14,7 @@ from collections import defaultdict
 
 import requests
 
-from db import SetupRow, fetch_access_token, fetch_all_active_setups_for_merchant
+from db import SetupRow, fetch_access_token, fetch_all_active_setups_for_merchant, fetch_product_handles_for_merchant
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _graphql(shop: str, token: str, query: str, variables: dict | None = None) -
     return resp.json()
 
 
-def _build_config(setups: list[SetupRow]) -> dict:
+def _build_config(setups: list[SetupRow], handles: dict[str, str]) -> dict:
     """
     Build the metafield config JSON from active setup rows.
 
@@ -58,6 +58,7 @@ def _build_config(setups: list[SetupRow]) -> dict:
     {
       "gid://shopify/Product/123": {
         "experimentDatetimeSubmitted": "2026-04-18T...",
+        "handle": "my-product",           // present when known
         "assignments": [
           { "baseVariantId", "experimentVariantId", "price", "probability" }
         ]
@@ -70,7 +71,7 @@ def _build_config(setups: list[SetupRow]) -> dict:
 
     config: dict = {}
     for product_id, product_setups in by_product.items():
-        config[product_id] = {
+        entry: dict = {
             "experimentDatetimeSubmitted": product_setups[0].experiment_datetime.isoformat(),
             "assignments": [
                 {
@@ -82,6 +83,9 @@ def _build_config(setups: list[SetupRow]) -> dict:
                 for s in product_setups
             ],
         }
+        if product_id in handles:
+            entry["handle"] = handles[product_id]
+        config[product_id] = entry
     return config
 
 
@@ -98,7 +102,8 @@ def sync_metafield_for_merchant(conn, merchant_id: str) -> bool:
 
     try:
         setups = fetch_all_active_setups_for_merchant(conn, merchant_id)
-        config = _build_config(setups)
+        handles = fetch_product_handles_for_merchant(conn, merchant_id)
+        config = _build_config(setups, handles)
 
         # Get the shop GID (required as metafield ownerId).
         shop_resp = _graphql(merchant_id, token, SHOP_ID_QUERY)

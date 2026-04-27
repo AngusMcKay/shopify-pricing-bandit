@@ -88,6 +88,7 @@ model ExperimentMerchantProductSnapshot {
   ProductStatus               String
   VariantId                   String
   VariantTitle                String
+  ProductHandle               String?
   VariantPrice                Decimal
   VariantCompareAtPrice       Decimal?
   VariantInventoryQuantity    Int?

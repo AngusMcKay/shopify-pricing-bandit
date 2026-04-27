@@ -135,26 +135,45 @@ export async function syncExperimentMetafield(
     let configValue: Record<string, unknown> = {};
 
     if (activeLives.length > 0) {
-      const setups = await db.experimentSetup.findMany({
-        where: {
-          MerchantId: merchantId,
-          IsActive: true,
-          OR: activeLives.map((l) => ({
-            ProductId: l.ProductId,
-            ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
-          })),
-        },
-        select: {
-          ProductId: true,
-          BaseVariantId: true,
-          ExperimentVariantId: true,
-          Price: true,
-          Probability: true,
-          ExperimentDatetimeSubmitted: true,
-        },
-      });
+      const [setups, snapshots] = await Promise.all([
+        db.experimentSetup.findMany({
+          where: {
+            MerchantId: merchantId,
+            IsActive: true,
+            OR: activeLives.map((l) => ({
+              ProductId: l.ProductId,
+              ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
+            })),
+          },
+          select: {
+            ProductId: true,
+            BaseVariantId: true,
+            ExperimentVariantId: true,
+            Price: true,
+            Probability: true,
+            ExperimentDatetimeSubmitted: true,
+          },
+        }),
+        db.experimentMerchantProductSnapshot.findMany({
+          where: {
+            MerchantId: merchantId,
+            OR: activeLives.map((l) => ({
+              ProductId: l.ProductId,
+              ExperimentDatetimeSubmitted: l.ExperimentDatetimeSubmitted,
+            })),
+          },
+          select: { ProductId: true, ProductHandle: true },
+          distinct: ["ProductId"],
+        }),
+      ]);
 
-      // Group by product.
+      // Build handle lookup.
+      const handleByProduct: Record<string, string | null> = {};
+      for (const s of snapshots) {
+        handleByProduct[s.ProductId] = s.ProductHandle ?? null;
+      }
+
+      // Group setups by product.
       const byProduct: Record<string, typeof setups> = {};
       for (const s of setups) {
         if (!byProduct[s.ProductId]) byProduct[s.ProductId] = [];
@@ -164,8 +183,10 @@ export async function syncExperimentMetafield(
       // Build the config per product.
       for (const live of activeLives) {
         const productSetups = byProduct[live.ProductId] || [];
+        const handle = handleByProduct[live.ProductId];
         configValue[live.ProductId] = {
           experimentDatetimeSubmitted: live.ExperimentDatetimeSubmitted.toISOString(),
+          ...(handle ? { handle } : {}),
           assignments: productSetups.map((s) => ({
             baseVariantId: s.BaseVariantId,
             experimentVariantId: s.ExperimentVariantId,

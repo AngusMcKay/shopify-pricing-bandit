@@ -36,6 +36,7 @@ interface ExistingVariantsResponse {
     product: {
       id: string;
       title: string;
+      handle: string;
       tags: string[];
       options: ProductOption[];
       variants: {
@@ -136,6 +137,7 @@ const GET_PRODUCT_VARIANTS_QUERY = `#graphql
     product(id: $id) {
       id
       title
+      handle
       tags
       options {
         id
@@ -588,6 +590,7 @@ async function handleActivate(
           ExperimentDatetimeSubmitted: experimentDatetime,
           ProductId: config.productId,
           ProductTitle: product.title,
+          ProductHandle: product.handle,
           ProductStatus: "ACTIVE",
           VariantId: v.id,
           VariantTitle: v.title,

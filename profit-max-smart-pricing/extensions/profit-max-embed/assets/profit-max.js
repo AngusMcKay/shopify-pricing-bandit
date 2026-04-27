@@ -380,34 +380,63 @@
       }
     }
 
-    // Path A: [data-product-id] attributes — Dawn and most Shopify themes.
-    var allCardEls = document.querySelectorAll('[data-product-id]');
-    dbg('applyCardPrices: configMap keys=', Object.keys(configMap), 'elements with data-product-id=', allCardEls.length);
+    // Walk up from an element to find a card container.
+    function findCardContainer(el) {
+      var node = el.parentElement;
+      for (var d = 0; d < 8 && node && node !== document.body; d++) {
+        var cls = node.className || '';
+        if (/card-wrapper|product-card-wrapper|product-card|grid__item/i.test(cls)) return node;
+        node = node.parentElement;
+      }
+      return null;
+    }
 
+    // Path A — handle-based: theme-agnostic, uses /products/{handle} links.
+    // Build a handle → numericId lookup from the configMap.
+    var handleToNumId = {};
+    var gids = Object.keys(configMap);
+    for (var gi = 0; gi < gids.length; gi++) {
+      var cfg = configMap[gids[gi]];
+      if (cfg && cfg.handle) {
+        handleToNumId[cfg.handle] = numericIdFromGid(gids[gi]);
+      }
+    }
+
+    if (Object.keys(handleToNumId).length > 0) {
+      dbg('applyCardPrices path A (handle): handles=', Object.keys(handleToNumId));
+      // Find all product links and extract the handle from the href.
+      var links = document.querySelectorAll('a[href*="/products/"]');
+      links.forEach(function (link) {
+        var m = link.href.match(/\/products\/([^/?#]+)/);
+        if (!m) return;
+        var handle = m[1];
+        var numId = handleToNumId[handle];
+        if (!numId || seenNumIds[numId]) return;
+        var container = findCardContainer(link);
+        if (!container) return;
+        dbg('applyCardPrices path A: found card for', handle, '/', numId);
+        applyToCard(numId, container);
+      });
+    }
+
+    // Path B — [data-product-id] attributes (Dawn standard and most themes).
+    var allCardEls = document.querySelectorAll('[data-product-id]');
+    dbg('applyCardPrices path B (data-product-id): count=', allCardEls.length);
     allCardEls.forEach(function (card) {
       var numId = card.getAttribute('data-product-id');
       if (numId) applyToCard(numId, card);
     });
 
-    // Path B: ID-based discovery for themes that don't emit [data-product-id].
-    // Dawn-family themes embed the numeric product ID at the end of element IDs,
-    // e.g. "CardLink-template--XYZ__product-grid-15019614732658". We query for
-    // an element whose ID ends with "-{numericId}", walk up to the card wrapper,
-    // then apply prices to price elements within that wrapper.
+    // Path C — ID-pattern fallback for themes without [data-product-id].
+    // Matches patterns like: __product-grid-{id}, CardLink--{id}
     var configNumIds = Object.keys(configMap).map(numericIdFromGid);
     configNumIds.forEach(function (numId) {
       if (seenNumIds[numId]) return;
       var anchor = document.querySelector('[id$="-' + numId + '"]');
       if (!anchor) return;
-      // Walk up to a card/wrapper container.
-      var card = anchor.parentElement;
-      for (var d = 0; d < 8 && card && card !== document.body; d++) {
-        var cls = card.className || '';
-        if (/card-wrapper|product-card|grid__item/i.test(cls)) break;
-        card = card.parentElement;
-      }
-      if (!card || card === document.body) return;
-      dbg('applyCardPrices path B: found card for', numId, 'via id selector');
+      var card = findCardContainer(anchor);
+      if (!card) return;
+      dbg('applyCardPrices path C: found card for', numId, 'via id selector');
       applyToCard(numId, card);
     });
   }
@@ -800,120 +829,65 @@
   function watchPriceElements(assignmentMap) {
     try {
       // -----------------------------------------------------------------------
-      // (a) MutationObserver on price elements within the product section.
+      // Single MutationObserver on <main> watches for ANY DOM change that
+      // introduces or modifies price elements. On each trigger it:
+      //   1. Re-queries live price elements (invalidating cache)
+      //   2. Checks if any show a price different from our experiment price
+      //   3. If so, rewrites synchronously (before browser paints)
       //
-      // Re-entry guard: MutationObserver callbacks are microtasks delivered
-      // AFTER the synchronous code that caused the mutation. A boolean flag
-      // set and cleared in the same synchronous call is already false by the
-      // time the callback runs. Instead we track the last price string we
-      // wrote and skip callbacks where every mutated target already holds it.
+      // This replaces the previous multi-observer approach. A single observer
+      // on a stable ancestor survives section re-renders that replace the
+      // product section, form, and price elements entirely.
       // -----------------------------------------------------------------------
-      var priceObserver = new MutationObserver(function (mutations) {
-        // Skip if every mutation target already shows our price (our own write).
-        var allOurs = mutations.every(function (m) {
-          return m.target.textContent === pm_lastAppliedPrice;
-        });
-        if (allOurs) return;
 
-        // Theme just overwrote a price — hide, rewrite, reveal synchronously.
-        // No delay: the observer fires after the theme's DOM write but before
-        // the browser paints, so this prevents the base price from ever appearing.
-        hidePriceEls();
+      function reapplyIfNeeded(forceRefresh) {
+        var els = forceRefresh ? queryPriceEls(true) : queryPriceEls();
+        if (els.length === 0 || !pm_lastAppliedPrice) return;
+        var mismatch = els.some(function (el) {
+          var txt = el.textContent.trim();
+          return txt !== '' && txt !== pm_lastAppliedPrice.trim();
+        });
+        if (!mismatch) return;
         applyExperimentPrices(assignmentMap);
-        showPriceEls();
-      });
-
-      queryPriceEls().forEach(function (el) {
-        priceObserver.observe(el, { childList: true, subtree: true, characterData: true });
-      });
-
-      // -----------------------------------------------------------------------
-      // (b) Product form 'change' event — fires BEFORE the theme JS runs.
-      //
-      // Hide prices immediately (synchronously) so the base price is never
-      // visible, then reapply experiment price in the next animation frame.
-      // The MutationObserver (a) provides a safety net if the theme updates
-      // prices asynchronously.
-      // -----------------------------------------------------------------------
-      var productForm = document.querySelector('form[action*="/cart/add"]');
-      if (productForm) {
-        productForm.addEventListener('change', function () {
-          hidePriceEls();
-          requestAnimationFrame(function () {
-            applyExperimentPrices(assignmentMap);
-            showPriceEls();
-          });
-        });
+        hidePmPriceOptionGroups();
       }
 
-      // -----------------------------------------------------------------------
-      // (c) Custom variant-change events (some themes / pickers use these
-      // instead of or in addition to the form 'change' event).
-      // -----------------------------------------------------------------------
-      ['variant:change', 'variantChange', 'on:variant:change'].forEach(function (evtName) {
-        document.addEventListener(evtName, function () {
-          hidePriceEls();
-          requestAnimationFrame(function () {
-            applyExperimentPrices(assignmentMap);
-            showPriceEls();
-          });
-        });
+      var mainObserver = new MutationObserver(function () {
+        reapplyIfNeeded(true);
       });
 
-      // -----------------------------------------------------------------------
-      // (d) Section-scoped observer for section re-renders.
-      //
-      // Some themes replace the product section HTML entirely on variant change
-      // (e.g. Dawn's section rendering). The old observed elements are gone and
-      // new ones appear with the original prices. We watch the product section
-      // (NOT the whole body) so unrelated insertions (carousel lazy-loads etc.)
-      // don't trigger re-applies.
-      // -----------------------------------------------------------------------
-      var sectionObserver = new MutationObserver(function (mutations) {
-        var hasNewPriceEls = false;
-        for (var mi = 0; mi < mutations.length; mi++) {
-          var added = mutations[mi].addedNodes;
-          for (var ai = 0; ai < added.length; ai++) {
-            var node = added[ai];
-            if (node.nodeType !== 1) continue;
-            if ((node.matches && node.matches(PRICE_SELECTORS)) ||
-                (node.querySelector && node.querySelector(PRICE_SELECTORS))) {
-              hasNewPriceEls = true;
-              break;
-            }
-          }
-          if (hasNewPriceEls) break;
-        }
-        if (!hasNewPriceEls) return;
+      var mainEl = document.querySelector('main') || document.body;
+      dbg('mainObserver root:', mainEl.tagName);
+      mainObserver.observe(mainEl, { childList: true, subtree: true, characterData: true });
 
-        // Invalidate cached price elements, re-attach observer, reapply synchronously.
+      // -----------------------------------------------------------------------
+      // Form change + custom events — handle variant switches where the theme
+      // hasn't rendered new HTML yet (just updated the form input). We hide
+      // prices, wait a tick for the theme to render, then reapply.
+      // -----------------------------------------------------------------------
+      var _changeTimer = null;
+      function handleVariantChange() {
+        if (_pmSwapping) return;
         hidePriceEls();
-        queryPriceEls(true).forEach(function (el) {
-          priceObserver.observe(el, { childList: true, subtree: true, characterData: true });
-        });
-        applyExperimentPrices(assignmentMap);
-        showPriceEls();
-      });
+        clearTimeout(_changeTimer);
+        _changeTimer = setTimeout(function () {
+          queryPriceEls(true);
+          applyExperimentPrices(assignmentMap);
+          hidePmPriceOptionGroups();
+          showPriceEls();
+        }, 50);
+      }
 
-      // Find the best ancestor to watch for section re-renders: walk up from
-      // the cart form looking for a <section> or element with "product" in
-      // its id/class. Fall back to document.body.
-      var sectionRoot = (function () {
-        var form = document.querySelector('form[action*="/cart/add"]');
-        if (form) {
-          var node = form.parentElement;
-          for (var d = 0; d < 8 && node && node !== document.body; d++) {
-            var tag = (node.tagName || '').toLowerCase();
-            if (tag === 'section') return node;
-            if (/product/i.test(node.id || '') || /product/i.test(node.className || '')) return node;
-            node = node.parentElement;
-          }
-          return form.parentElement || document.body;
-        }
-        return document.body;
-      })();
-      dbg('sectionObserver root:', sectionRoot.tagName, sectionRoot.id || sectionRoot.className || '');
-      sectionObserver.observe(sectionRoot, { childList: true, subtree: true });
+      document.addEventListener('change', function (e) {
+        var target = e.target;
+        if (!target) return;
+        var form = target.closest && target.closest('form[action*="/cart/add"]');
+        if (form) handleVariantChange();
+      }, true);
+
+      ['variant:change', 'variantChange', 'on:variant:change'].forEach(function (evtName) {
+        document.addEventListener(evtName, handleVariantChange);
+      });
 
     } catch (e) {
       console.warn('[ProfitMax] watchPriceElements error:', e);
@@ -1029,6 +1003,71 @@
       }
 
       // =======================================================================
+      // SECTION 4.5 — PATCH SELECTED VARIANT FOR DYNAMIC CHECKOUT
+      //
+      // Shopify's dynamic checkout button (Buy It Now) reads the selected
+      // variant from window.Shopify.product, NOT from the form input. We
+      // need to patch the product object so the button picks up the
+      // experiment variant and its price.
+      // =======================================================================
+
+      var selectedBase = (function () {
+        var idInput = document.querySelector('form[action*="/cart/add"] input[name="id"]');
+        var rawId = (idInput && idInput.value) ||
+          (document.querySelector('form[action*="/cart/add"] select[name="id"]') || {}).value;
+        if (!rawId) return null;
+        return expToBaseGid[rawId] || buildGid('ProductVariant', rawId);
+      })();
+      var chosenExp = selectedBase && assignmentMap[selectedBase];
+
+      if (chosenExp) {
+        var chosenExpNumId = numericIdFromGid(chosenExp.experimentVariantId);
+        var sp = window.Shopify && window.Shopify.product;
+        if (sp) {
+          // Find the experiment variant object in Shopify's variant list
+          // (before our suppressExperimentVariants splice removed it).
+          // Build a synthetic variant entry if needed.
+          var expVariantObj = null;
+          if (Array.isArray(sp.variants)) {
+            for (var evi = 0; evi < sp.variants.length; evi++) {
+              if (String(sp.variants[evi].id) === chosenExpNumId) {
+                expVariantObj = sp.variants[evi];
+                break;
+              }
+            }
+          }
+
+          // Patch selected_or_first_available_variant — this is what the
+          // dynamic checkout button reads to determine the variant to buy.
+          if (expVariantObj) {
+            sp.selected_or_first_available_variant = expVariantObj;
+            dbg('patched selected_or_first_available_variant to experiment variant', chosenExpNumId, 'price=', expVariantObj.price);
+          } else {
+            // Variant was already spliced — build a minimal stand-in from
+            // the base variant and override the id/price.
+            var baseNumId = numericIdFromGid(selectedBase);
+            var baseObj = null;
+            if (Array.isArray(sp.variants)) {
+              for (var bvi = 0; bvi < sp.variants.length; bvi++) {
+                if (String(sp.variants[bvi].id) === baseNumId) {
+                  baseObj = sp.variants[bvi];
+                  break;
+                }
+              }
+            }
+            if (baseObj) {
+              var synth = Object.assign({}, baseObj, {
+                id: parseInt(chosenExpNumId, 10),
+                price: parseFloat(chosenExp.price) * 100, // Shopify stores price in cents
+              });
+              sp.selected_or_first_available_variant = synth;
+              dbg('patched selected_or_first_available_variant (synthetic) to', chosenExpNumId, 'price=', chosenExp.price);
+            }
+          }
+        }
+      }
+
+      // =======================================================================
       // SECTION 5 — PRICE DISPLAY
       // =======================================================================
 
@@ -1040,6 +1079,9 @@
       // SECTION 6 — ADD-TO-CART INTERCEPTION
       // =======================================================================
 
+      // Build the variant swap map and publish it to window.__profitMax so the
+      // early fetch patch (installed inline in the embed block, before any other
+      // scripts can capture window.fetch) can read it.
       var variantSwapMap = {};
       var baseIds = Object.keys(assignmentMap);
       for (var q = 0; q < baseIds.length; q++) {
@@ -1048,16 +1090,73 @@
         variantSwapMap[numericIdFromGid(baseGid)] = numericIdFromGid(expGid);
         variantSwapMap[baseGid] = expGid;
       }
-      // Also map unchosen experiment variants → the chosen experiment variant.
-      // If the theme's picker defaulted to an unchosen experiment variant (because
-      // suppress code ran too late), add-to-cart still routes to the correct variant.
+      // Also map unchosen experiment variants → the chosen one so add-to-cart
+      // works even if the theme's picker defaulted to an unchosen variant.
+      // Add BOTH numeric AND GID mappings — the form submit interceptor uses
+      // numeric IDs, but the GraphQL interceptor (Buy It Now) uses GIDs.
       for (var q2 = 0; q2 < assignments.length; q2++) {
-        var aBaseNumId = numericIdFromGid(assignments[q2].baseVariantId);
-        var aExpNumId  = numericIdFromGid(assignments[q2].experimentVariantId);
+        var aBaseGid   = assignments[q2].baseVariantId;
+        var aExpGid    = assignments[q2].experimentVariantId;
+        var aBaseNumId = numericIdFromGid(aBaseGid);
+        var aExpNumId  = numericIdFromGid(aExpGid);
         var chosenExpNumId = variantSwapMap[aBaseNumId];
         if (chosenExpNumId && aExpNumId !== chosenExpNumId) {
           variantSwapMap[aExpNumId] = chosenExpNumId;
+          // GID version for the GraphQL/fetch interceptor.
+          var chosenExpGid = assignmentMap[aBaseGid].experimentVariantId;
+          variantSwapMap[aExpGid] = chosenExpGid;
         }
+      }
+      // Publish — the early fetch patch in the embed block reads this.
+      window.__profitMax.variantSwapMap = variantSwapMap;
+      dbg('variantSwapMap published', Object.keys(variantSwapMap).length, 'entries');
+
+      // Proactively swap the form's variant ID so "Buy It Now" (dynamic
+      // checkout) picks up the experiment variant. The Buy It Now button
+      // reads input[name="id"] directly — it doesn't go through our fetch
+      // patch or form submit interceptor.
+      var _pmSwapping = false; // re-entry guard for change events
+      function swapFormVariantId() {
+        _pmSwapping = true;
+        var idInput = document.querySelector('form[action*="/cart/add"] input[name="id"]');
+        if (!idInput) {
+          var sel = document.querySelector('form[action*="/cart/add"] select[name="id"]');
+          if (sel) {
+            var sw = variantSwapMap[String(sel.value)];
+            if (sw) {
+              dbg('swapping select[name="id"]:', sel.value, '→', sw);
+              sel.value = sw;
+            }
+          }
+          _pmSwapping = false;
+          return;
+        }
+        var swapped = variantSwapMap[String(idInput.value)];
+        if (swapped) {
+          dbg('swapping form input[name="id"]:', idInput.value, '→', swapped);
+          idInput.value = swapped;
+        }
+        _pmSwapping = false;
+      }
+      // Don't swap at init — changing the form input can trigger theme
+      // variant-change logic that hides prices. Only swap on interaction
+      // with the payment button (mousedown/click/touchstart below).
+
+      // Intercept clicks on the Buy It Now / dynamic checkout button at the
+      // earliest possible moment (mousedown capture phase) so the form input
+      // is swapped before the button's own click handler reads it.
+      var paymentBtnContainer = document.querySelector('shopify-payment-button, .shopify-payment-button');
+      if (paymentBtnContainer) {
+        paymentBtnContainer.addEventListener('mousedown', function () {
+          swapFormVariantId();
+        }, true);
+        paymentBtnContainer.addEventListener('click', function () {
+          swapFormVariantId();
+        }, true);
+        paymentBtnContainer.addEventListener('touchstart', function () {
+          swapFormVariantId();
+        }, true);
+        dbg('payment button interception installed');
       }
 
       document.addEventListener('submit', function (event) {
@@ -1070,55 +1169,6 @@
           if (swapped) idInput.value = swapped;
         } catch (e) { console.warn('[ProfitMax] form submit interceptor error:', e); }
       }, true);
-
-      if (!window.__profitMax.fetchPatched) {
-        window.__profitMax.fetchPatched = true;
-        var originalFetch = window.fetch;
-
-        window.fetch = async function (input, init) {
-          try {
-            var url = typeof input === 'string' ? input
-              : (input instanceof Request ? input.url : String(input));
-
-            if (url.includes('/cart/add')) {
-              var body = init && init.body;
-              if (body) {
-                function swapParsed(parsed) {
-                  var changed = false;
-                  if (parsed.id) { var sw = variantSwapMap[String(parsed.id)]; if (sw) { parsed.id = sw; changed = true; } }
-                  if (Array.isArray(parsed.items)) {
-                    for (var i = 0; i < parsed.items.length; i++) {
-                      if (parsed.items[i].id) { var isw = variantSwapMap[String(parsed.items[i].id)]; if (isw) { parsed.items[i].id = isw; changed = true; } }
-                    }
-                  }
-                  return changed;
-                }
-                if (typeof body === 'string') {
-                  try {
-                    var parsed = JSON.parse(body);
-                    if (swapParsed(parsed)) init = Object.assign({}, init, { body: JSON.stringify(parsed) });
-                  } catch (e) {
-                    var params = new URLSearchParams(body);
-                    var vid = params.get('id');
-                    if (vid && variantSwapMap[vid]) { params.set('id', variantSwapMap[vid]); init = Object.assign({}, init, { body: params.toString() }); }
-                  }
-                } else if (body instanceof URLSearchParams) {
-                  var vid2 = body.get('id');
-                  if (vid2 && variantSwapMap[vid2]) { var np = new URLSearchParams(body); np.set('id', variantSwapMap[vid2]); init = Object.assign({}, init, { body: np }); }
-                } else if (body instanceof FormData) {
-                  var rawId = body.get('id');
-                  if (rawId && variantSwapMap[String(rawId)]) {
-                    var nfd = new FormData();
-                    body.forEach(function (v, k) { nfd.append(k, k === 'id' ? (variantSwapMap[String(v)] || v) : v); });
-                    init = Object.assign({}, init, { body: nfd });
-                  }
-                }
-              }
-            }
-          } catch (e) { console.warn('[ProfitMax] fetch interceptor error:', e); }
-          return originalFetch.call(this, input, init);
-        };
-      }
 
       // =======================================================================
       // SECTION 7 — IMPRESSION TRACKING

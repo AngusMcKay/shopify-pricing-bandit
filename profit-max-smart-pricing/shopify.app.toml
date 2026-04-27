@@ -28,6 +28,10 @@ api_version = "2026-07"
   topics = [ "themes/publish" ]
   uri = "/webhooks/themes/publish"
 
+  [[webhooks.subscriptions]]
+  topics = [ "products/update" ]
+  uri = "/webhooks/products/update"
+
   # orders/paid requires "Protected customer data" approval in the Partner Dashboard.
   # Register this subscription after approval is granted.
   # [[webhooks.subscriptions]]

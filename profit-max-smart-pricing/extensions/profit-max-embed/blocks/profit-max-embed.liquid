@@ -53,6 +53,125 @@ window.__pmPageProductId="{{ product.id }}";
 {%- endif -%}
 </script>
 
+<script>
+// Patch window.fetch early — before Shopify's dynamic checkout button scripts
+// load and capture their own reference to fetch. The swap maps are populated
+// later by profit-max.js once it has built the visitor's assignment.
+(function () {
+  window.__profitMax = window.__profitMax || {};
+  var _dbg = location.search.indexOf('pm_debug=1') !== -1;
+
+  // Shared helper: swap variant GIDs in a JSON string body (exact quoted match).
+  function swapGidsInBody(str, swapMap) {
+    var changed = false;
+    var keys = Object.keys(swapMap);
+    for (var ki = 0; ki < keys.length; ki++) {
+      var sk = keys[ki];
+      if (sk.indexOf('gid://') !== 0) continue;
+      var quoted = '"' + sk + '"';
+      if (str.indexOf(quoted) !== -1) {
+        str = str.split(quoted).join('"' + swapMap[sk] + '"');
+        changed = true;
+        if (_dbg) console.log('[ProfitMax] fetch/XHR GID swap:', sk, '→', swapMap[sk]);
+      }
+    }
+    return changed ? str : null;
+  }
+
+  // Shared helper: swap numeric variant IDs in a /cart/add JSON body.
+  function swapCartAddBody(body, swapMap) {
+    try {
+      var p = JSON.parse(body);
+      var ch = false;
+      if (p.id) { var s = swapMap[String(p.id)]; if (s) { p.id = s; ch = true; if (_dbg) console.log('[ProfitMax] cart/add id swap:', p.id, '→', s); } }
+      if (Array.isArray(p.items)) {
+        for (var i = 0; i < p.items.length; i++) {
+          if (p.items[i].id) { var si = swapMap[String(p.items[i].id)]; if (si) { p.items[i].id = si; ch = true; } }
+        }
+      }
+      return ch ? JSON.stringify(p) : null;
+    } catch (e) {
+      var ps = new URLSearchParams(body);
+      var vid = ps.get('id');
+      if (vid && swapMap[vid]) { ps.set('id', swapMap[vid]); return ps.toString(); }
+      return null;
+    }
+  }
+
+  var _orig = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      var swapMap = window.__profitMax.variantSwapMap;
+      if (swapMap) {
+        var url = typeof input === 'string' ? input
+          : (input instanceof Request ? input.url : String(input));
+
+        if (_dbg && (url.indexOf('/cart') !== -1 || url.indexOf('graphql') !== -1)) {
+          console.log('[ProfitMax] fetch intercepted:', url);
+        }
+
+        // /cart/add — numeric or GID variant id in JSON/FormData/URLSearchParams body.
+        if (url.includes('/cart/add')) {
+          var body = init && init.body;
+          if (body && typeof body === 'string') {
+            var swapped = swapCartAddBody(body, swapMap);
+            if (swapped) init = Object.assign({}, init, { body: swapped });
+          } else if (body instanceof URLSearchParams) {
+            var vid2 = body.get('id');
+            if (vid2 && swapMap[vid2]) { var np = new URLSearchParams(body); np.set('id', swapMap[vid2]); init = Object.assign({}, init, { body: np }); }
+          } else if (body instanceof FormData) {
+            var rawId = body.get('id');
+            if (rawId && swapMap[String(rawId)]) {
+              var nfd = new FormData();
+              body.forEach(function (v, k) { nfd.append(k, k === 'id' ? (swapMap[String(v)] || v) : v); });
+              init = Object.assign({}, init, { body: nfd });
+            }
+          }
+        }
+
+        // Storefront GraphQL — cart and checkout mutations (Buy It Now buttons).
+        if (url.includes('/api/') && url.includes('graphql')) {
+          var gb = init && init.body;
+          if (gb && typeof gb === 'string') {
+            var swappedGql = swapGidsInBody(gb, swapMap);
+            if (swappedGql) {
+              init = Object.assign({}, init, { body: swappedGql });
+            }
+          }
+        }
+      }
+    } catch (e) { /* never break fetch */ }
+    return _orig.apply(this, arguments);
+  };
+  window.__profitMax.fetchPatched = true;
+
+  // Also patch XMLHttpRequest — some Shopify checkout flows use XHR.
+  var _xhrOpen = XMLHttpRequest.prototype.open;
+  var _xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this._pmUrl = url;
+    return _xhrOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function (body) {
+    try {
+      var swapMap = window.__profitMax.variantSwapMap;
+      var url = this._pmUrl || '';
+
+      if (swapMap && body && typeof body === 'string') {
+        if (url.indexOf('/cart/add') !== -1) {
+          var swapped = swapCartAddBody(body, swapMap);
+          if (swapped) body = swapped;
+        }
+        if (url.indexOf('/api/') !== -1 && url.indexOf('graphql') !== -1) {
+          var swappedGql = swapGidsInBody(body, swapMap);
+          if (swappedGql) body = swappedGql;
+        }
+      }
+    } catch (e) { /* never break XHR */ }
+    return _xhrSend.call(this, body);
+  };
+})();
+</script>
 <script src="{{ 'profit-max.js' | asset_url }}" defer></script>
 
 {% schema %}
