@@ -32,15 +32,19 @@ api_version = "2026-07"
   topics = [ "products/update" ]
   uri = "/webhooks/products/update"
 
-  # orders/paid requires "Protected customer data" approval in the Partner Dashboard.
-  # Register this subscription after approval is granted.
-  # [[webhooks.subscriptions]]
-  # topics = [ "orders/paid" ]
-  # uri = "/webhooks/orders/paid"
+  [[webhooks.subscriptions]]
+  topics = [ "products/delete" ]
+  uri = "/webhooks/products/delete"
+
+  # orders/paid requires "Protected customer data" approval in the Partner Dashboard
+  # before deploying to production. Works on dev stores without approval.
+  [[webhooks.subscriptions]]
+  topics = [ "orders/paid" ]
+  uri = "/webhooks/orders/paid"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,write_products,read_orders,read_inventory,read_themes"
+scopes = "read_products,write_products,read_orders,read_inventory,write_inventory,read_themes"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]

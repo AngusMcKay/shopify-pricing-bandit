@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 
 // ---------------------------------------------------------------------------
@@ -114,6 +114,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       select: {
         ExperimentDatetimeSubmitted: true,
         ProductId: true,
+        BaseVariantId: true,
         ExperimentVariantId: true,
         ExperimentSubset: true,
       },
@@ -168,6 +169,111 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         break; // OrderId is order-level, not per-line-item — no point retrying
       }
       throw err;
+    }
+
+    // -------------------------------------------------------------------------
+    // Inventory adjustment: decrement the BASE variant's stock by 1.
+    //
+    // Experiment variants use inventoryPolicy: CONTINUE (no stock tracking).
+    // When a customer buys an experiment variant, Shopify doesn't decrement the
+    // base variant's inventory. We do it here to prevent overselling.
+    // -------------------------------------------------------------------------
+    try {
+      const { admin } = await unauthenticated.admin(shop);
+
+      // Get the base variant's inventory item ID
+      const inventoryRes = await admin.graphql(
+        `#graphql
+        query GetVariantInventory($id: ID!) {
+          productVariant(id: $id) {
+            inventoryItem {
+              id
+              inventoryLevels(first: 10) {
+                edges {
+                  node {
+                    id
+                    location {
+                      id
+                    }
+                    quantities(names: ["available"]) {
+                      name
+                      quantity
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        { variables: { id: experimentSetup.BaseVariantId } },
+      );
+
+      const inventoryJson = (await inventoryRes.json()) as {
+        data: {
+          productVariant: {
+            inventoryItem: {
+              id: string;
+              inventoryLevels: {
+                edges: Array<{
+                  node: {
+                    location: { id: string };
+                    quantities: Array<{ name: string; quantity: number }>;
+                  };
+                }>;
+              };
+            };
+          } | null;
+        };
+      };
+
+      const inventoryItem = inventoryJson.data.productVariant?.inventoryItem;
+      if (inventoryItem && inventoryItem.inventoryLevels.edges.length > 0) {
+        // Decrement at the first location that has stock.
+        // Multi-location merchants: ideally we'd match the fulfillment location,
+        // but that info isn't available until fulfillment. First-with-stock is
+        // correct for single-location merchants (the vast majority).
+        const locationWithStock = inventoryItem.inventoryLevels.edges.find((edge) => {
+          const available = edge.node.quantities.find((q) => q.name === "available");
+          return available && available.quantity > 0;
+        });
+
+        const changes = locationWithStock
+          ? [{
+              inventoryItemId: inventoryItem.id,
+              locationId: locationWithStock.node.location.id,
+              delta: -1,
+            }]
+          : [];
+
+        if (changes.length > 0) {
+          await admin.graphql(
+            `#graphql
+            mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!) {
+              inventoryAdjustQuantities(input: $input) {
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }`,
+            {
+              variables: {
+                input: {
+                  reason: "correction",
+                  name: "available",
+                  changes,
+                },
+              },
+            },
+          );
+        }
+      }
+    } catch (invErr) {
+      // Non-fatal: log but don't fail the webhook. The purchase record is already saved.
+      console.error(
+        `[ProfitMax] Failed to adjust base variant inventory for ${experimentSetup.BaseVariantId}:`,
+        invErr,
+      );
     }
   }
 

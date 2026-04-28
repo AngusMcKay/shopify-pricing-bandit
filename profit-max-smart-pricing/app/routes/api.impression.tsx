@@ -177,27 +177,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  await db.impressions.create({
-    data: {
-      CookieId: body.CookieId,
-      SessionId: body.SessionId,
-      Datetime: new Date(),
-      MerchantId: body.MerchantId,
-      ExperimentDatetimeSubmitted: experimentDatetime,
-      ProductId: body.ProductId,
-      ExperimentVariantId: body.ExperimentVariantId,
-      ExperimentSubset: body.ExperimentSubset ?? null,
-      Price: String(body.Price),
-      Currency: body.Currency,
-      Market: body.Market ?? null,
-      Country: body.Country ?? null,
-      DeviceType: body.DeviceType,
-      TrafficSource: body.TrafficSource ?? null,
-      ReferrerURL: body.ReferrerURL ?? null,
-      UserAgent: body.UserAgent ?? null,
-      IsNewVisitor: isNewVisitor,
-    },
-  });
+  try {
+    await db.impressions.create({
+      data: {
+        CookieId: body.CookieId,
+        SessionId: body.SessionId,
+        Datetime: new Date(),
+        MerchantId: body.MerchantId,
+        ExperimentDatetimeSubmitted: experimentDatetime,
+        ProductId: body.ProductId,
+        ExperimentVariantId: body.ExperimentVariantId,
+        ExperimentSubset: body.ExperimentSubset ?? null,
+        Price: String(body.Price),
+        Currency: body.Currency,
+        Market: body.Market ?? null,
+        Country: body.Country ?? null,
+        DeviceType: body.DeviceType,
+        TrafficSource: body.TrafficSource ?? null,
+        ReferrerURL: body.ReferrerURL ?? null,
+        UserAgent: body.UserAgent ?? null,
+        IsNewVisitor: isNewVisitor,
+      },
+    });
+  } catch (err: unknown) {
+    // Unique constraint on [CookieId, ProductId, ExperimentDatetimeSubmitted] —
+    // visitor cleared localStorage and re-triggered assignment. Skip silently.
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code: string }).code === "P2002"
+    ) {
+      return Response.json({ success: true }, { status: 200 });
+    }
+    throw err;
+  }
 
   return Response.json({ success: true }, { status: 201 });
 };

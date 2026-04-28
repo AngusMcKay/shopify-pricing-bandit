@@ -187,6 +187,7 @@ model Impressions {
 
   merchant Merchants @relation(fields: [MerchantId], references: [MerchantId])
 
+  @@unique([CookieId, ProductId, ExperimentDatetimeSubmitted])
   @@index([MerchantId])
   @@index([CookieId])
   @@index([ExperimentDatetimeSubmitted])

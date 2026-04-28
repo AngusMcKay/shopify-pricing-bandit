@@ -38,6 +38,7 @@ interface ProductOption {
 
 interface ProductUpdatePayload {
   admin_graphql_api_id: string; // full GID
+  title: string;                // product title
   status: string;               // "active" | "archived" | "draft"
   options: ProductOption[];
   variants: ProductVariant[];
@@ -160,11 +161,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     data: { Status: "Paused", LastUpdatedAt: new Date() },
   });
 
+  const productLabel = product.title
+    ? `${product.title} (${productGid})`
+    : productGid;
+
   const issueList = issues.map((i) => `• ${i}`).join("\n");
   const message =
     `A change to one of your products may have affected a running experiment and it has been paused. ` +
     `Please review the product and re-activate the experiment if everything looks correct.\n\n` +
-    `Product: ${productGid}\nIssues detected:\n${issueList}`;
+    `Product: ${productLabel}\nIssues detected:\n${issueList}`;
 
   await db.notifications.create({
     data: {
@@ -175,14 +180,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   // Sync metafield so storefront stops serving experiment prices immediately.
-  void (async () => {
-    try {
-      const { admin } = await unauthenticated.admin(shop);
-      await syncExperimentMetafield(admin, shop);
-    } catch (e) {
-      console.warn("[ProfitMax] products/update: metafield sync failed:", e);
-    }
-  })();
+  // This is awaited (not fire-and-forget) because a paused experiment with a
+  // stale metafield causes checkout errors for customers still seeing old prices.
+  try {
+    const { admin } = await unauthenticated.admin(shop);
+    await syncExperimentMetafield(admin, shop);
+  } catch (e) {
+    console.error("[ProfitMax] products/update: metafield sync failed — storefront may serve stale prices:", e);
+  }
 
   return new Response(null, { status: 200 });
 };
