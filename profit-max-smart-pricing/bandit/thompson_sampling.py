@@ -79,7 +79,10 @@ def run_thompson_sampling(
     n = len(variants)
     prices = np.array([float(v.price) for v in variants])
     alphas = np.array([v.purchases + 1 for v in variants], dtype=float)
-    betas = np.array([v.impressions - v.purchases + 1 for v in variants], dtype=float)
+    betas = np.maximum(
+        np.array([v.impressions - v.purchases + 1 for v in variants], dtype=float),
+        1e-6,
+    )
 
     if mode == "profit":
         value_multiplier = prices - float(cost)
