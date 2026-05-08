@@ -370,7 +370,34 @@
       var result = buildOrLoadAssignment('pm_assign' + numId, assignments);
       var firstBase = Object.keys(result.map)[0];
       if (!firstBase) { seenNumIds[numId] = true; return; }
-      var formatted = formatMoney(result.map[firstBase].price);
+      var firstA = result.map[firstBase];
+      var formatted = formatMoney(firstA.price);
+
+      if (result.isNew) {
+        try {
+          var referrerDomain = null;
+          try { if (document.referrer) referrerDomain = new URL(document.referrer).hostname; } catch (e) { /* ignore */ }
+          fetch('https://' + shop + '/apps/profit-max/api/impression', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              CookieId: cookieId,
+              SessionId: sessionId,
+              MerchantId: shop,
+              ExperimentDatetimeSubmitted: productCfg.experimentDatetimeSubmitted,
+              ProductId: gid,
+              ExperimentVariantId: firstA.experimentVariantId,
+              Price: firstA.price,
+              Currency: (window.Shopify && window.Shopify.currency && window.Shopify.currency.active) || '',
+              DeviceType: screen.width < 768 ? 'mobile' : 'desktop',
+              TrafficSource: referrerDomain,
+              ReferrerURL: document.referrer || null,
+              UserAgent: navigator.userAgent,
+            }),
+          }).catch(function (e) { console.warn('[ProfitMax] Impression POST failed (card):', e); });
+          dbg('impression fired for card product', gid, 'price=', firstA.price);
+        } catch (e) { console.warn('[ProfitMax] Impression build error (card):', e); }
+      }
 
       var priceEls = containerEl.querySelectorAll(CARD_PRICE_SELECTORS);
       if (priceEls.length > 0) {

@@ -675,10 +675,11 @@ async function handleCancel(
     return Response.json({ success: true, cancelled: 0 }, { status: 200 });
   }
 
-  await cleanupShopifyVariants(admin, merchantId, activeLive);
-
   const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
 
+  // Cancel in DB first so that the products/update webhook (fired by
+  // cleanupShopifyVariants below) sees Status: "Cancelled" and skips
+  // creating spurious pause notifications.
   await db.experimentLive.updateMany({
     where: {
       MerchantId: merchantId,
@@ -687,6 +688,8 @@ async function handleCancel(
     },
     data: { Status: "Cancelled", LastUpdatedAt: new Date() },
   });
+
+  await cleanupShopifyVariants(admin, merchantId, activeLive);
 
   void syncExperimentMetafield(admin, session.shop);
 
@@ -718,18 +721,22 @@ async function handleCancelProducts(
     return Response.json({ success: true, cancelled: 0 }, { status: 200 });
   }
 
-  await cleanupShopifyVariants(admin, merchantId, activeLive);
-
   const activeDatetimes = activeLive.map((e) => e.ExperimentDatetimeSubmitted);
 
+  // Cancel in DB first so that the products/update webhook (fired by
+  // cleanupShopifyVariants below) sees Status: "Cancelled" and skips
+  // creating spurious pause notifications.
   await db.experimentLive.updateMany({
     where: {
       MerchantId: merchantId,
       Status: { in: ["Active", "Paused"] },
+      ProductId: { in: productIds },
       ExperimentDatetimeSubmitted: { in: activeDatetimes },
     },
     data: { Status: "Cancelled", LastUpdatedAt: new Date() },
   });
+
+  await cleanupShopifyVariants(admin, merchantId, activeLive);
 
   void syncExperimentMetafield(admin, session.shop);
 

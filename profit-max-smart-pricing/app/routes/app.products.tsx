@@ -150,14 +150,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Fetch active and paused experiment configs (two-step pattern).
   // Paused experiments are shown in the UI so merchants can see them and
   // re-activate after enabling the app embed on their new theme.
-  const activeExperimentDatetimes = await db.experimentLive.findMany({
+  const activeExperiments = await db.experimentLive.findMany({
     where: { MerchantId: session.shop, Status: { in: ["Active", "Paused"] } },
-    select: { ExperimentDatetimeSubmitted: true },
+    select: { ExperimentDatetimeSubmitted: true, ProductId: true },
   });
 
-  const activeDatetimes = activeExperimentDatetimes.map(
-    (e) => e.ExperimentDatetimeSubmitted,
-  );
+  const activeDatetimes = activeExperiments.map((e) => e.ExperimentDatetimeSubmitted);
+  const activeProductIds = activeExperiments.map((e) => e.ProductId);
 
   const rows =
     activeDatetimes.length > 0
@@ -165,6 +164,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           where: {
             MerchantId: session.shop,
             ExperimentDatetimeSubmitted: { in: activeDatetimes },
+            ProductId: { in: activeProductIds },
           },
           orderBy: { ExperimentDatetimeSubmitted: "desc" },
           select: {
