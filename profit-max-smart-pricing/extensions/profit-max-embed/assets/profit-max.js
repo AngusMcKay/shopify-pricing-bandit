@@ -715,7 +715,41 @@
       document.querySelectorAll('label, legend, span, p').forEach(function (el) {
         if (el.textContent.trim() === '_pm_price') hideOptionContainer(el);
       });
+
+      hideCartPmProperties();
     } catch (e) { console.warn('[ProfitMax] hidePmPriceOptionGroups error:', e); }
+  }
+
+  // Hide _pm_price option display in cart line items (cart drawer/popup).
+  // Themes render variant options as plain text (e.g. "<li>_pm_price: 29.99</li>")
+  // which CSS attribute selectors cannot match, so we use a TreeWalker to find
+  // and hide the containing row element.
+  function hideCartPmProperties() {
+    try {
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+      var node;
+      while ((node = walker.nextNode())) {
+        var text = node.nodeValue;
+        if (!text || text.indexOf('_pm_price') === -1) continue;
+        if (text.trim().indexOf('_pm_price') !== 0) continue;
+        var el = node.parentElement;
+        for (var d = 0; d < 5 && el && el !== document.body; d++) {
+          var tag = (el.tagName || '').toLowerCase();
+          if (tag === 'li' || tag === 'p' || /property|option/i.test(el.className || '')) {
+            el.style.setProperty('display', 'none', 'important');
+            break;
+          }
+          if (tag === 'dt') {
+            el.style.setProperty('display', 'none', 'important');
+            if (el.nextElementSibling && el.nextElementSibling.tagName.toLowerCase() === 'dd') {
+              el.nextElementSibling.style.setProperty('display', 'none', 'important');
+            }
+            break;
+          }
+          el = el.parentElement;
+        }
+      }
+    } catch (e) { console.warn('[ProfitMax] hideCartPmProperties error:', e); }
   }
 
   if (document.readyState === 'loading') {
@@ -723,6 +757,17 @@
   } else {
     hidePmPriceOptionGroups();
   }
+
+  // Cart drawer lives outside <main> (typically in <aside>), so the product-section
+  // observer won't catch it. Install a debounced body-level observer so _pm_price
+  // is hidden whenever the cart drawer opens or its contents update.
+  var _cartHideTimer = null;
+  var _cartObserver = new MutationObserver(function () {
+    clearTimeout(_cartHideTimer);
+    _cartHideTimer = setTimeout(hideCartPmProperties, 50);
+  });
+  _cartObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(function () { _cartObserver.disconnect(); }, 300000); // stop after 5 min
 
   function suppressExperimentVariants(experimentVariantNumerics) {
     try {
