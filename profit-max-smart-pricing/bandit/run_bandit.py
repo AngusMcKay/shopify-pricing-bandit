@@ -11,17 +11,24 @@ Usage:
     python run_bandit.py --dry-run    # compute new probabilities but don't write
 
 Environment:
-    DATABASE_URL  — PostgreSQL connection string (same as the Node app)
+    DATABASE_URL      — PostgreSQL connection string (same as the Node app)
+    SENTRY_DSN        — Sentry DSN for error reporting (optional)
+    ALERT_EMAIL_TO    — your personal email address for the daily digest
+    ALERT_EMAIL_FROM  — verified sender address in Resend
+    RESEND_API_KEY    — Resend API key for sending the digest email
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
+
+import sentry_sdk
 
 from db import (
     fetch_active_experiments,
@@ -35,6 +42,7 @@ from db import (
     transaction,
     update_bandit_params,
 )
+from email_report import ExperimentResult, send_digest
 from sync_metafield import sync_metafield_for_merchant
 from thompson_sampling import VariantInput, run_thompson_sampling
 
@@ -45,18 +53,27 @@ logging.basicConfig(
 logger = logging.getLogger("bandit")
 
 
+def _init_sentry() -> None:
+    dsn = os.environ.get("SENTRY_DSN")
+    if dsn:
+        sentry_sdk.init(dsn=dsn, environment=os.environ.get("RAILWAY_ENVIRONMENT", "production"))
+        logger.info("Sentry initialised")
+
+
 def process_experiment(
     conn,
     merchant_id: str,
     product_id: str,
     experiment_datetime: datetime,
     dry_run: bool = False,
-) -> bool:
+) -> ExperimentResult:
     """
     Run one bandit update cycle for a single experiment (merchant + product).
 
-    Returns True if probabilities were updated, False if skipped.
+    Returns an ExperimentResult describing what happened.
     """
+    result = ExperimentResult(merchant_id=merchant_id, product_id=product_id, status="failed")
+
     # Fetch current state.
     setups = fetch_active_setups(conn, merchant_id, product_id, experiment_datetime)
     if not setups:
@@ -64,7 +81,8 @@ def process_experiment(
             "No active setup rows for %s / %s — skipping",
             merchant_id, product_id,
         )
-        return False
+        result.status = "skipped_no_setups"
+        return result
 
     bandit_params = fetch_bandit_params(conn, merchant_id, product_id, experiment_datetime)
     params_by_variant = {p.experiment_variant_id: p for p in bandit_params}
@@ -121,17 +139,38 @@ def process_experiment(
     current_round = max(s.bandit_round for s in setups)
     new_round = current_round + 1
 
-    total_impressions = sum(
-        (stats.get(s.experiment_variant_id).impressions if stats.get(s.experiment_variant_id) else 0)
+    imp_values = [
+        stats[s.experiment_variant_id].impressions if s.experiment_variant_id in stats else 0
         for s in setups
-    )
+    ]
+    pur_values = [
+        stats[s.experiment_variant_id].purchases if s.experiment_variant_id in stats else 0
+        for s in setups
+    ]
+    total_impressions = sum(imp_values)
+
+    # Populate result stats (available regardless of skip/update).
+    result.bandit_round = current_round
+    result.total_impressions = total_impressions
+    result.min_impressions = min(imp_values)
+    result.max_impressions = max(imp_values)
+    result.total_purchases = sum(pur_values)
+    result.min_purchases = min(pur_values)
+    result.max_purchases = max(pur_values)
 
     if total_impressions == 0:
         logger.info(
             "No impressions yet for %s / %s — keeping equal probabilities (round %d)",
             merchant_id, product_id, current_round,
         )
-        return False
+        result.status = "skipped_no_impressions"
+        return result
+
+    # Determine leading price (highest new probability, from any base variant group).
+    top_variant_id = max(all_new_probs, key=lambda vid: all_new_probs[vid])
+    top_setup = next(s for s in setups if s.experiment_variant_id == top_variant_id)
+    result.top_price = str(top_setup.price)
+    result.top_probability = all_new_probs[top_variant_id]
 
     # Log the update.
     logger.info(
@@ -152,7 +191,8 @@ def process_experiment(
 
     if dry_run:
         logger.info("DRY RUN — no writes performed")
-        return False
+        result.status = "updated"
+        return result
 
     # Write updates in a transaction.
     now = datetime.now(timezone.utc)
@@ -201,10 +241,13 @@ def process_experiment(
             })
         update_bandit_params(conn, param_updates, now)
 
-    return True
+    result.status = "updated"
+    return result
 
 
 def main() -> None:
+    _init_sentry()
+
     parser = argparse.ArgumentParser(description="Run bandit probability updates")
     parser.add_argument(
         "--dry-run",
@@ -214,46 +257,57 @@ def main() -> None:
     args = parser.parse_args()
 
     conn = get_connection()
+    experiment_results: list[ExperimentResult] = []
+
     try:
         experiments = fetch_active_experiments(conn)
         if not experiments:
             logger.info("No active experiments — nothing to do")
+            send_digest([], dry_run=args.dry_run)
             return
 
         logger.info("Found %d active experiment(s)", len(experiments))
 
-        # Track which merchants need a metafield sync.
         merchants_to_sync: set[str] = set()
         updated = 0
 
         for exp in experiments:
             try:
-                changed = process_experiment(
+                result = process_experiment(
                     conn,
                     exp.merchant_id,
                     exp.product_id,
                     exp.experiment_datetime,
                     dry_run=args.dry_run,
                 )
-                if changed:
+                experiment_results.append(result)
+                if result.status == "updated":
                     updated += 1
                     merchants_to_sync.add(exp.merchant_id)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to process %s / %s — continuing with next",
                     exp.merchant_id, exp.product_id,
                 )
+                sentry_sdk.capture_exception(exc)
+                experiment_results.append(ExperimentResult(
+                    merchant_id=exp.merchant_id,
+                    product_id=exp.product_id,
+                    status="failed",
+                    error=str(exc),
+                ))
 
         # Sync metafields for all merchants that had updates.
         if not args.dry_run:
             for merchant_id in merchants_to_sync:
                 try:
                     sync_metafield_for_merchant(conn, merchant_id)
-                except Exception:
+                except Exception as exc:
                     logger.exception(
                         "Metafield sync failed for %s — storefront will use API fallback",
                         merchant_id,
                     )
+                    sentry_sdk.capture_exception(exc)
 
         logger.info(
             "Done — %d/%d experiment(s) updated, %d merchant(s) synced",
@@ -263,6 +317,17 @@ def main() -> None:
     finally:
         conn.close()
 
+    try:
+        send_digest(experiment_results, dry_run=args.dry_run)
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.exception("Bandit run failed with unhandled exception")
+        sentry_sdk.capture_exception(exc)
+        sentry_sdk.flush(timeout=5)
+        sys.exit(1)
