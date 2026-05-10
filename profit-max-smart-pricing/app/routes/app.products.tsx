@@ -27,6 +27,8 @@ interface ProductExperimentConfig {
   regionalVariation: boolean;
   exactPricePoints: number[];
   optimizationMode?: "revenue" | "profit";
+  priorRate?: number;
+  priorStrength?: "weak" | "medium" | "strong";
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +208,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const costOfProduction =
         costRaw != null && costRaw !== "" ? parseFloat(costRaw) : undefined;
 
+      const priorRateRaw = params["PriorRate"];
+      const priorStrengthRaw = params["PriorStrength"];
+
       savedConfigsByProductId.set(productId, {
         productId,
         enabled: params["IncludedInExperiment"] === "true",
@@ -219,6 +224,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         exactPricePoints: [],
         optimizationMode:
           params["OptimizationMode"] === "profit" ? "profit" : "revenue",
+        priorRate: priorRateRaw != null ? parseFloat(priorRateRaw) * 100 : undefined, // store as %
+        priorStrength:
+          priorStrengthRaw === "weak" || priorStrengthRaw === "medium" || priorStrengthRaw === "strong"
+            ? priorStrengthRaw
+            : undefined,
       });
     }
   }
@@ -235,6 +245,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       costOfProduction: undefined,
       regionalVariation: false,
       exactPricePoints: [],
+      priorRate: undefined,
+      priorStrength: undefined,
     };
   });
 
@@ -252,6 +264,8 @@ interface ProductConfig {
   costOfProduction: string;
   regionalVariation: boolean;
   exactPricePoints: string; // comma-separated
+  priorRate: string; // "" = use default (3%)
+  priorStrength: "weak" | "medium" | "strong";
 }
 
 type ConfigMap = Record<string, ProductConfig>;
@@ -290,6 +304,8 @@ function buildInitialConfigs(
       costOfProduction: costStr,
       regionalVariation: c.regionalVariation,
       exactPricePoints: c.exactPricePoints.join(", "),
+      priorRate: c.priorRate != null ? String(c.priorRate) : "",
+      priorStrength: c.priorStrength ?? "medium",
     };
   }
   return result;
@@ -399,6 +415,12 @@ export default function ProductsPage() {
       .filter((n) => !isNaN(n));
     if (JSON.stringify(uiExact) !== JSON.stringify(server.exactPricePoints)) return true;
 
+    const uiPriorRate = ui.priorRate !== "" ? parseFloat(ui.priorRate) / 100 : undefined;
+    if (uiPriorRate !== server.priorRate) return true;
+
+    const uiPriorStrength = ui.priorStrength !== "medium" ? ui.priorStrength : undefined;
+    if (uiPriorStrength !== server.priorStrength) return true;
+
     return false;
   };
 
@@ -465,6 +487,8 @@ export default function ProductsPage() {
               }
             }
 
+            const priorRate = config.priorRate !== "" ? parseFloat(config.priorRate) / 100 : null;
+
             return {
               productId: p.id,
               minPrice: parseFloat(config.minPrice),
@@ -474,6 +498,8 @@ export default function ProductsPage() {
               exactPricePoints: exactPoints,
               optimizationMode: globalSettings.optimizationMode,
               priceEndings: globalSettings.priceEndings,
+              priorRate: !isNaN(priorRate as number) ? priorRate : null,
+              priorStrength: config.priorStrength,
             };
           }),
         };
@@ -896,12 +922,60 @@ export default function ProductsPage() {
             </s-stack>
           </s-section>
 
-          <s-section heading="Algorithm memory — coming soon">
-            <s-banner tone="info" heading="Coming soon">
-              Control how quickly the algorithm forgets past performance and
-              re-explores prices. Useful for seasonal products or after a
-              catalogue change.
-            </s-banner>
+          <s-section heading="Prior conversion rate assumption">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                When there is little or no data for this product, the algorithm assumes a
+                baseline conversion rate to avoid jumping to conclusions too quickly. The
+                default is 3% — a reasonable starting point for most online stores. You
+                can adjust this if you know your store converts significantly higher or
+                lower. Over time, as real data accumulates, this assumption has less and
+                less effect on the result.
+              </s-paragraph>
+              <s-text-field
+                label="Assumed conversion rate (%)"
+                value={fineGrainedConfig?.priorRate ?? ""}
+                placeholder="Default: 3"
+                onInput={(e: Event) => {
+                  if (!fineGrainedProductId) return;
+                  updateConfig(fineGrainedProductId, {
+                    priorRate: (e.target as HTMLInputElement).value,
+                  });
+                }}
+              />
+            </s-stack>
+          </s-section>
+
+          <s-section heading="Assumption strength">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                Controls how quickly real data overrides the initial assumption above.
+                A <s-text type="strong">stronger</s-text> prior means more data is
+                needed before the algorithm shifts probabilities — useful for products
+                with high traffic where you want stable, confident updates.
+                A <s-text type="strong">weaker</s-text> prior means the algorithm
+                reacts faster to early data — useful for lower-traffic products where
+                you want quicker adaptation, but be aware it may jump to conclusions
+                before the longer-term picture is clear. When you have hundreds of
+                impressions and multiple purchases per day, the strength setting makes
+                little practical difference.
+              </s-paragraph>
+              <s-select
+                label="Assumption strength"
+                value={fineGrainedConfig?.priorStrength ?? "medium"}
+                onChange={(e: Event) => {
+                  if (!fineGrainedProductId) return;
+                  updateConfig(fineGrainedProductId, {
+                    priorStrength: (e.target as HTMLElementTagNameMap["s-select"]).value as
+                      "weak" | "medium" | "strong",
+                  });
+                }}
+              >
+                <s-option value="weak">Weak — reacts quickly (~33 pseudo-observations)</s-option>
+                <s-option value="medium">Medium — balanced (~100 pseudo-observations)</s-option>
+                <s-option value="strong">Strong — reacts slowly (~250 pseudo-observations)</s-option>
+              </s-select>
+            </s-stack>
           </s-section>
 
           <s-section heading="Exploration rate — coming soon">

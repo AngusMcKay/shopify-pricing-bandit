@@ -222,6 +222,80 @@ def fetch_new_stats(
     return stats
 
 
+def fetch_merchant_prior(
+    conn,
+    merchant_id: str,
+    min_impressions: int = 50,
+) -> tuple[int, int] | None:
+    """
+    Compute a pooled conversion rate from all of a merchant's experiment history
+    (across all products and all rounds, including the current experiment).
+
+    Returns (total_impressions, total_purchases) if total_impressions >= min_impressions,
+    otherwise None (caller should fall back to the hardcoded default prior).
+
+    min_impressions guards against using a pooled rate that's itself too thin to
+    be informative — 50 observations is enough to get a stable rate estimate.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(i.imp_count), 0) AS total_impressions,
+                COALESCE(SUM(p.pur_count), 0) AS total_purchases
+            FROM (
+                SELECT COUNT(*) AS imp_count
+                FROM "Impressions"
+                WHERE "MerchantId" = %s
+            ) i,
+            (
+                SELECT COUNT(*) AS pur_count
+                FROM "Purchases"
+                WHERE "MerchantId" = %s
+            ) p
+        """, (merchant_id, merchant_id))
+        row = cur.fetchone()
+        if not row:
+            return None
+        total_impressions, total_purchases = int(row[0]), int(row[1])
+        if total_impressions < min_impressions:
+            return None
+        return (total_impressions, total_purchases)
+
+
+PRIOR_STRENGTH_MAP = {"weak": 33, "medium": 100, "strong": 250}
+
+
+def fetch_product_prior_settings(
+    conn,
+    merchant_id: str,
+    product_id: str,
+    experiment_datetime: datetime,
+) -> tuple[float | None, int | None]:
+    """
+    Get merchant-configured prior settings from ExperimentMerchantInputs.
+
+    Returns (prior_rate, prior_strength) where:
+      prior_rate     — decimal conversion rate assumption (e.g. 0.03), or None if not set
+      prior_strength — pseudo-observation count (33/100/250), or None if not set
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT "ExperimentParameter", "ExperimentParameterValue"
+            FROM "ExperimentMerchantInputs"
+            WHERE "MerchantId" = %s
+              AND "ProductId" = %s
+              AND "ExperimentDatetimeSubmitted" = %s
+              AND "ExperimentParameter" IN ('PriorRate', 'PriorStrength')
+        """, (merchant_id, product_id, experiment_datetime))
+        params = {row[0]: row[1] for row in cur.fetchall()}
+
+    prior_rate = float(params["PriorRate"]) if "PriorRate" in params else None
+    prior_strength_raw = params.get("PriorStrength")
+    prior_strength = PRIOR_STRENGTH_MAP.get(prior_strength_raw) if prior_strength_raw else None
+
+    return (prior_rate, prior_strength)
+
+
 def fetch_cost_of_production(
     conn,
     merchant_id: str,

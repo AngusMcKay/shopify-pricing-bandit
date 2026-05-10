@@ -110,6 +110,8 @@ interface ProductActivationConfig {
   exactPricePoints: number[]; // empty = auto-generate
   optimizationMode: "revenue" | "profit";
   priceEndings: number[]; // e.g. [0.99, 0.49, 0.00]
+  priorRate?: number | null;    // decimal, e.g. 0.03 = 3%
+  priorStrength?: "weak" | "medium" | "strong" | null;
 }
 
 interface ActivateBody {
@@ -571,6 +573,12 @@ async function handleActivate(
       ];
       if (config.costOfProduction != null) {
         eavParams.push(["CostOfProduction", config.costOfProduction.toFixed(2)]);
+      }
+      if (config.priorRate != null) {
+        eavParams.push(["PriorRate", config.priorRate.toFixed(4)]);
+      }
+      if (config.priorStrength != null) {
+        eavParams.push(["PriorStrength", config.priorStrength]);
       }
 
       await tx.experimentMerchantInputs.createMany({

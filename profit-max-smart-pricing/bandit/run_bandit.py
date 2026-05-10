@@ -35,6 +35,8 @@ from db import (
     fetch_active_setups,
     fetch_bandit_params,
     fetch_cost_of_production,
+    fetch_merchant_prior,
+    fetch_product_prior_settings,
     fetch_new_stats,
     deactivate_setup_rows,
     get_connection,
@@ -89,6 +91,20 @@ def process_experiment(
 
     stats = fetch_new_stats(conn, merchant_id, product_id, experiment_datetime)
 
+    # Fetch merchant-wide pooled conversion rate for the prior.
+    # Returns None if there isn't enough history yet — thompson_sampling falls
+    # back to the hardcoded 3% / 100-observation default in that case.
+    prior = fetch_merchant_prior(conn, merchant_id)
+    prior_impressions = prior[0] if prior else None
+    prior_purchases   = prior[1] if prior else None
+
+    # Fetch per-product prior overrides set by the merchant in the UI.
+    # prior_rate_override:     e.g. 0.05 = 5% assumed conversion rate
+    # prior_strength_override: e.g. 33 (weak) / 100 (medium) / 250 (strong)
+    prior_rate_override, prior_strength_override = fetch_product_prior_settings(
+        conn, merchant_id, product_id, experiment_datetime,
+    )
+
     # Determine optimisation mode from bandit params.
     mode = "revenue"
     if bandit_params:
@@ -104,49 +120,136 @@ def process_experiment(
             )
             mode = "revenue"
 
-    # Group setups by base variant — Thompson Sampling runs per group
-    # because probabilities must sum to 1.0 within each base variant.
+    # Group setups by base variant.
     by_base: dict[str, list] = defaultdict(list)
     for s in setups:
         by_base[s.base_variant_id].append(s)
 
-    # Run Thompson Sampling for each base variant group.
-    # All groups share the same price points, so they'll get the same
-    # probabilities (same Beta posteriors). We run per-group anyway for
-    # correctness in case future subsets differ.
     all_new_probs: dict[str, float] = {}
     all_ev_means: dict[str, float] = {}
     all_ev_vars: dict[str, float] = {}
 
-    for base_variant_id, group in by_base.items():
+    # Detect the linked-draws case: all base variants share exactly the same
+    # set of price points. This happens when a product has multiple size/colour
+    # variants at the same base price — the storefront assigns one price for the
+    # whole product and records impressions only against the first base variant's
+    # experiment variants (bases[0] in JS). Purchases can land on any size.
+    #
+    # In this case we must aggregate impressions + purchases by price across all
+    # base variants, run Thompson Sampling once, and write the same probability
+    # back to every experiment variant at each price. Running per-base-variant
+    # independently would give every size except the first stale/zero probabilities.
+    bases = list(by_base.keys())
+    linked_draws = False
+    if len(bases) > 1:
+        ref_prices = frozenset(str(s.price) for s in by_base[bases[0]])
+        linked_draws = all(
+            frozenset(str(s.price) for s in by_base[b]) == ref_prices
+            for b in bases[1:]
+        )
+
+    if linked_draws:
+        logger.info(
+            "Linked-draws case detected for %s / %s (%d base variants, %d price points)",
+            merchant_id, product_id, len(bases), len(ref_prices),
+        )
+        # Aggregate impressions and purchases by price string across all base variants.
+        by_price: dict[str, list] = defaultdict(list)
+        for s in setups:
+            by_price[str(s.price)].append(s)
+
         variants_in = []
-        for s in group:
-            st = stats.get(s.experiment_variant_id)
+        rep_variant_by_price: dict[str, str] = {}  # price_str → representative experiment_variant_id
+        for price_str, price_setups in by_price.items():
+            agg_imp = sum(
+                stats[s.experiment_variant_id].impressions if s.experiment_variant_id in stats else 0
+                for s in price_setups
+            )
+            agg_pur = sum(
+                stats[s.experiment_variant_id].purchases if s.experiment_variant_id in stats else 0
+                for s in price_setups
+            )
+            rep = price_setups[0]
+            rep_variant_by_price[price_str] = rep.experiment_variant_id
             variants_in.append(VariantInput(
-                experiment_variant_id=s.experiment_variant_id,
-                price=s.price,
-                impressions=st.impressions if st else 0,
-                purchases=st.purchases if st else 0,
+                experiment_variant_id=rep.experiment_variant_id,
+                price=rep.price,
+                impressions=agg_imp,
+                purchases=agg_pur,
             ))
 
-        results = run_thompson_sampling(variants_in, mode=mode, cost=cost)
-        for r in results:
-            all_new_probs[r.experiment_variant_id] = r.probability
-            all_ev_means[r.experiment_variant_id] = r.expected_value_mean
-            all_ev_vars[r.experiment_variant_id] = r.expected_value_variance
+        ts_results = run_thompson_sampling(
+            variants_in, mode=mode, cost=cost,
+            prior_impressions=prior_impressions, prior_purchases=prior_purchases,
+            prior_strength=prior_strength_override, prior_rate=prior_rate_override,
+        )
+
+        # Map representative variant → probability/stats from TS output.
+        prob_by_rep: dict[str, float] = {r.experiment_variant_id: r.probability for r in ts_results}
+        mean_by_rep: dict[str, float] = {r.experiment_variant_id: r.expected_value_mean for r in ts_results}
+        var_by_rep:  dict[str, float] = {r.experiment_variant_id: r.expected_value_variance for r in ts_results}
+
+        # Apply the same probability to every experiment variant at each price.
+        for s in setups:
+            rep_vid = rep_variant_by_price[str(s.price)]
+            all_new_probs[s.experiment_variant_id] = prob_by_rep[rep_vid]
+            all_ev_means[s.experiment_variant_id] = mean_by_rep[rep_vid]
+            all_ev_vars[s.experiment_variant_id] = var_by_rep[rep_vid]
+
+    else:
+        # Independent draws — each base variant has its own price set (or there is
+        # only one base variant). Run Thompson Sampling per group independently.
+        for base_variant_id, group in by_base.items():
+            variants_in = []
+            for s in group:
+                st = stats.get(s.experiment_variant_id)
+                variants_in.append(VariantInput(
+                    experiment_variant_id=s.experiment_variant_id,
+                    price=s.price,
+                    impressions=st.impressions if st else 0,
+                    purchases=st.purchases if st else 0,
+                ))
+
+            ts_results = run_thompson_sampling(
+                variants_in, mode=mode, cost=cost,
+                prior_impressions=prior_impressions, prior_purchases=prior_purchases,
+                prior_strength=prior_strength_override, prior_rate=prior_rate_override,
+            )
+            for r in ts_results:
+                all_new_probs[r.experiment_variant_id] = r.probability
+                all_ev_means[r.experiment_variant_id] = r.expected_value_mean
+                all_ev_vars[r.experiment_variant_id] = r.expected_value_variance
 
     # Check if probabilities actually changed meaningfully.
     current_round = max(s.bandit_round for s in setups)
     new_round = current_round + 1
 
-    imp_values = [
-        stats[s.experiment_variant_id].impressions if s.experiment_variant_id in stats else 0
-        for s in setups
-    ]
-    pur_values = [
-        stats[s.experiment_variant_id].purchases if s.experiment_variant_id in stats else 0
-        for s in setups
-    ]
+    # For the linked-draws case, aggregate by price to avoid double-counting
+    # (e.g. 3 sizes × 5 prices = 15 rows but only 5 distinct data points).
+    if linked_draws:
+        imp_values = [
+            sum(
+                stats[s.experiment_variant_id].impressions if s.experiment_variant_id in stats else 0
+                for s in price_setups
+            )
+            for price_setups in by_price.values()
+        ]
+        pur_values = [
+            sum(
+                stats[s.experiment_variant_id].purchases if s.experiment_variant_id in stats else 0
+                for s in price_setups
+            )
+            for price_setups in by_price.values()
+        ]
+    else:
+        imp_values = [
+            stats[s.experiment_variant_id].impressions if s.experiment_variant_id in stats else 0
+            for s in setups
+        ]
+        pur_values = [
+            stats[s.experiment_variant_id].purchases if s.experiment_variant_id in stats else 0
+            for s in setups
+        ]
     total_impressions = sum(imp_values)
 
     # Populate result stats (available regardless of skip/update).
