@@ -161,7 +161,7 @@ def seed_experiment(
                  "ExperimentSubset", "Price", "Currency", "Market", "Country",
                  "DeviceType", "TrafficSource", "ReferrerURL", "UserAgent", "IsNewVisitor")
             VALUES %s
-            ON CONFLICT ("CookieId", "ProductId", "ExperimentDatetimeSubmitted") DO NOTHING
+            ON CONFLICT DO NOTHING
             """,
             [
                 (
@@ -186,7 +186,7 @@ def seed_experiment(
                      "DeviceType", "TrafficSource", "OrderId", "OrderValue",
                      "IsFirstPurchase", "DiscountApplied")
                 VALUES %s
-                ON CONFLICT ("OrderId") DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 [
                     (
