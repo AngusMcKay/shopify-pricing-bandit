@@ -18,13 +18,17 @@ import {
   YAxis,
 } from "recharts";
 import { authenticate } from "../shopify.server";
-import { fetchAnalytics } from "../services/stub-data";
+import { fetchAnalyticsData } from "../services/analytics.server";
 import type { AnalyticsData, Metric } from "../services/stub-data";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  const analytics = await fetchAnalytics("7d");
-  return { analytics };
+  const { session } = await authenticate.admin(request);
+  const [data7d, data14d, data30d] = await Promise.all([
+    fetchAnalyticsData(session.shop, "7d"),
+    fetchAnalyticsData(session.shop, "14d"),
+    fetchAnalyticsData(session.shop, "30d"),
+  ]);
+  return { allAnalytics: { "7d": data7d, "14d": data14d, "30d": data30d } };
 };
 
 // ---------------------------------------------------------------------------
@@ -66,24 +70,20 @@ function buildXAxisTicks(dates: string[], maxTicks = 8): string[] {
 // ---------------------------------------------------------------------------
 
 export default function AnalyticsPage() {
-  const { analytics: initialAnalytics } = useLoaderData<typeof loader>();
+  const { allAnalytics } = useLoaderData<typeof loader>();
 
-  const [analytics, setAnalytics] = useState<AnalyticsData>(initialAnalytics);
+  const [analytics, setAnalytics] = useState<AnalyticsData>(allAnalytics["7d"]);
   const [period, setPeriod] = useState("7d");
   const [selectedProductId, setSelectedProductId] = useState(
-    initialAnalytics.productOptions[0]?.id ?? "",
+    allAnalytics["7d"].productOptions[0]?.id ?? "",
   );
   const [lineMetricId, setLineMetricId] = useState(
-    initialAnalytics.kpiTimeSeries?.metrics[0]?.id ?? "",
+    allAnalytics["7d"].kpiTimeSeries?.metrics[0]?.id ?? "",
   );
 
-  const handlePeriodChange = async (newPeriod: string) => {
+  const handlePeriodChange = (newPeriod: string) => {
     setPeriod(newPeriod);
-    // TODO: replace with real API call — fetch(`/api/analytics?period=${newPeriod}`).then(...)
-    const { fetchAnalytics: fetchFn } = await import(
-      "../services/stub-data"
-    );
-    const newData = await fetchFn(newPeriod);
+    const newData = allAnalytics[newPeriod as keyof typeof allAnalytics];
     setAnalytics(newData);
     if (!newData.kpiTimeSeries?.metrics.find((m) => m.id === lineMetricId)) {
       setLineMetricId(newData.kpiTimeSeries?.metrics[0]?.id ?? "");

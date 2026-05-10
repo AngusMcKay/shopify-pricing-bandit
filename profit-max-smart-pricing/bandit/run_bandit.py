@@ -261,10 +261,15 @@ def process_experiment(
     result.min_purchases = min(pur_values)
     result.max_purchases = max(pur_values)
 
-    if total_impressions == 0:
+    # Require at least one impression per price point on average before updating.
+    # With fewer than this, the price-weighted prior dominates and probabilities
+    # shift toward higher prices purely due to price magnitude, not real data.
+    # The experiment is considered not yet meaningfully started below this threshold.
+    n_price_points = len(imp_values)
+    if total_impressions < n_price_points:
         logger.info(
-            "No impressions yet for %s / %s — keeping equal probabilities (round %d)",
-            merchant_id, product_id, current_round,
+            "Too few impressions for %s / %s (%d total, need >= %d) — keeping equal probabilities (round %d)",
+            merchant_id, product_id, total_impressions, n_price_points, current_round,
         )
         result.status = "skipped_no_impressions"
         return result
