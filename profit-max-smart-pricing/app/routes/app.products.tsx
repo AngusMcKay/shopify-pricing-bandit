@@ -12,10 +12,11 @@ import db from "../db.server";
 interface Product {
   id: string;
   title: string;
+  productType: string;
   currentPrice: number;
   currency: string;
-  unitCost: number | null; // from inventoryItem.unitCost of first variant
-  hasMixedPrices: boolean; // true when base variants have different prices
+  unitCost: number | null;
+  hasMixedPrices: boolean;
 }
 
 interface ProductExperimentConfig {
@@ -24,9 +25,7 @@ interface ProductExperimentConfig {
   minPrice: number;
   maxPrice: number;
   costOfProduction?: number;
-  regionalVariation: boolean;
   exactPricePoints: number[];
-  optimizationMode?: "revenue" | "profit";
   priorRate?: number;
   priorStrength?: "weak" | "medium" | "strong";
 }
@@ -47,6 +46,8 @@ interface VariantNode {
 interface ProductNode {
   id: string;
   title: string;
+  productType: string;
+  isGiftCard: boolean;
   status: string;
   priceRangeV2: { minVariantPrice: { currencyCode: string } };
   variants: {
@@ -71,6 +72,8 @@ const PRODUCTS_QUERY = `#graphql
         node {
           id
           title
+          productType
+          isGiftCard
           status
           priceRangeV2 {
             minVariantPrice {
@@ -125,12 +128,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const page = json.data.products;
 
     for (const { node: p } of page.edges) {
+      // Skip gift card products. isGiftCard is the reliable Shopify flag;
+      // productType "Gift Cards" is a secondary check for older API versions.
+      // Title-based filtering is avoided since merchants may sell physical
+      // greeting cards named "Gift Card".
+      if (p.isGiftCard || p.productType === "Gift Cards") continue;
+
       const firstVariant = p.variants.edges[0]?.node;
       const firstVariantPrice = firstVariant?.price ?? "0";
       const unitCostAmount = firstVariant?.inventoryItem?.unitCost?.amount;
-      // Check if base variants have different prices. Exclude experiment
-      // variants (those with a _pm_price option) so active experiments
-      // don't trigger a false positive.
       const baseVariants = p.variants.edges.filter(
         (e) => !e.node.selectedOptions.some((o) => o.name === "_pm_price"),
       );
@@ -138,6 +144,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       products.push({
         id: p.id,
         title: p.title,
+        productType: p.productType,
         currentPrice: parseFloat(firstVariantPrice),
         currency: p.priceRangeV2.minVariantPrice.currencyCode,
         unitCost: unitCostAmount != null ? parseFloat(unitCostAmount) : null,
@@ -149,9 +156,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cursor = page.pageInfo.endCursor;
   }
 
-  // Fetch active and paused experiment configs (two-step pattern).
-  // Paused experiments are shown in the UI so merchants can see them and
-  // re-activate after enabling the app embed on their new theme.
   const activeExperiments = await db.experimentLive.findMany({
     where: { MerchantId: session.shop, Status: { in: ["Active", "Paused"] } },
     select: { ExperimentDatetimeSubmitted: true, ProductId: true },
@@ -220,11 +224,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           costOfProduction !== undefined && !isNaN(costOfProduction)
             ? costOfProduction
             : undefined,
-        regionalVariation: params["RegionalVariation"] === "true",
         exactPricePoints: [],
-        optimizationMode:
-          params["OptimizationMode"] === "profit" ? "profit" : "revenue",
-        priorRate: priorRateRaw != null ? parseFloat(priorRateRaw) * 100 : undefined, // store as %
+        priorRate: priorRateRaw != null ? parseFloat(priorRateRaw) * 100 : undefined,
         priorStrength:
           priorStrengthRaw === "weak" || priorStrengthRaw === "medium" || priorStrengthRaw === "strong"
             ? priorStrengthRaw
@@ -233,7 +234,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Every product gets a config — fall back to defaults for products with no saved config
   const configs: ProductExperimentConfig[] = products.map((p) => {
     const saved = savedConfigsByProductId.get(p.id);
     if (saved) return saved;
@@ -243,7 +243,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       minPrice: parseFloat((p.currentPrice * 0.9).toFixed(2)),
       maxPrice: parseFloat((p.currentPrice * 1.1).toFixed(2)),
       costOfProduction: undefined,
-      regionalVariation: false,
       exactPricePoints: [],
       priorRate: undefined,
       priorStrength: undefined,
@@ -262,7 +261,6 @@ interface ProductConfig {
   minPrice: string;
   maxPrice: string;
   costOfProduction: string;
-  regionalVariation: boolean;
   exactPricePoints: string; // comma-separated
   priorRate: string; // "" = use default (3%)
   priorStrength: "weak" | "medium" | "strong";
@@ -271,11 +269,14 @@ interface ProductConfig {
 type ConfigMap = Record<string, ProductConfig>;
 
 interface GlobalSettings {
-  optimizationMode: "revenue" | "profit";
   defaultCostPercent: string; // "" = not set
-  priceEndings: number[]; // e.g. [0.99, 0.49, 0.0]
+  // Single-digit endings (0–9): match any price where last cent digit equals the value.
+  // E.g. 9 → allows .09, .19, .29, …, .99
+  priceEndingDigits: number[];
+  // Exact two-digit cent endings (0–99): match only that precise cent value.
+  // E.g. 99 → allows only .99; 49 → allows only .49
+  priceEndingExact: number[];
 }
-
 
 function buildInitialConfigs(
   products: Product[],
@@ -284,29 +285,37 @@ function buildInitialConfigs(
   const configByProductId = Object.fromEntries(
     serverConfigs.map((c) => [c.productId, c]),
   );
-  const productById = Object.fromEntries(products.map((p) => [p.id, p]));
   const result: ConfigMap = {};
   for (const p of products) {
     const c = configByProductId[p.id];
-    if (!c) continue;
-    const product = productById[p.id];
-    // Use saved costOfProduction if present; fall back to inventory unit cost
-    const costStr =
-      c.costOfProduction != null
-        ? c.costOfProduction.toFixed(2)
-        : product?.unitCost != null
-          ? product.unitCost.toFixed(2)
-          : "";
-    result[p.id] = {
-      enabled: c.enabled,
-      minPrice: c.minPrice.toFixed(2),
-      maxPrice: c.maxPrice.toFixed(2),
-      costOfProduction: costStr,
-      regionalVariation: c.regionalVariation,
-      exactPricePoints: c.exactPricePoints.join(", "),
-      priorRate: c.priorRate != null ? String(c.priorRate) : "",
-      priorStrength: c.priorStrength ?? "medium",
-    };
+    if (c) {
+      const costStr =
+        c.costOfProduction != null
+          ? c.costOfProduction.toFixed(2)
+          : p.unitCost != null
+            ? p.unitCost.toFixed(2)
+            : "";
+      result[p.id] = {
+        enabled: c.enabled,
+        minPrice: c.minPrice.toFixed(2),
+        maxPrice: c.maxPrice.toFixed(2),
+        costOfProduction: costStr,
+        exactPricePoints: c.exactPricePoints.join(", "),
+        priorRate: c.priorRate != null ? String(c.priorRate) : "",
+        priorStrength: c.priorStrength ?? "medium",
+      };
+    } else {
+      // No active experiment — initialise with defaults so toggling on works correctly
+      result[p.id] = {
+        enabled: false,
+        minPrice: (p.currentPrice * 0.9).toFixed(2),
+        maxPrice: (p.currentPrice * 1.1).toFixed(2),
+        costOfProduction: p.unitCost != null ? p.unitCost.toFixed(2) : "",
+        exactPricePoints: "",
+        priorRate: "",
+        priorStrength: "medium",
+      };
+    }
   }
   return result;
 }
@@ -321,14 +330,103 @@ function closeModal(ref: ModalRef) {
 }
 
 // ---------------------------------------------------------------------------
+// Info tooltip component
+// ---------------------------------------------------------------------------
+
+function InfoTooltip({ content }: { content: string }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <span
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "16px",
+          height: "16px",
+          borderRadius: "50%",
+          border: "1.5px solid #8c9196",
+          color: "#8c9196",
+          fontSize: "10px",
+          fontWeight: 700,
+          cursor: "help",
+          userSelect: "none",
+          flexShrink: 0,
+        }}
+      >
+        i
+      </span>
+      {visible && (
+        <span
+          style={{
+            position: "absolute",
+            left: "22px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "#202223",
+            color: "#fff",
+            borderRadius: "4px",
+            padding: "8px 12px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+            width: "300px",
+            zIndex: 1000,
+            pointerEvents: "none",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+          }}
+        >
+          {content}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Price ending presets
+// ---------------------------------------------------------------------------
+
+const PRICE_ENDING_PRESETS = [
+  { label: ".00", value: 0 },
+  { label: ".49", value: 49 },
+  { label: ".50", value: 50 },
+  { label: ".99", value: 99 },
+];
+
+const PRICE_ENDINGS_TOOLTIP =
+  "Last-digit chips (0–9): allow any price whose cent value ends in that digit — e.g. selecting 9 allows $9.09, $9.19, …, $9.99. " +
+  "Exact chips (.49, .99 etc.): allow only that precise cent value — e.g. selecting .99 allows $9.99 but not $9.89. " +
+  "Both sets combine: a price is valid if it matches any selected digit or any exact ending. " +
+  "Type a number (0–99) and press Enter to add a custom exact ending.";
+
+// ---------------------------------------------------------------------------
+// Table input style helpers
+// ---------------------------------------------------------------------------
+
+function tableInputStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: "100%",
+    padding: "6px 8px",
+    border: `1px solid ${disabled ? "#e1e3e5" : "#8c9196"}`,
+    borderRadius: "4px",
+    fontSize: "14px",
+    textAlign: "left",
+    background: disabled ? "#f6f6f7" : "#fff",
+    color: disabled ? "#8c9196" : "#202223",
+    cursor: disabled ? "not-allowed" : "text",
+    boxSizing: "border-box",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function ProductsPage() {
   const { products, configs: serverConfigs } = useLoaderData<typeof loader>();
 
-  // Frozen snapshot of the server-loaded configs indexed by productId.
-  // Using a ref so it never changes as the user edits the UI.
   const serverConfigsRef = useRef(
     Object.fromEntries(serverConfigs.map((c) => [c.productId, c])),
   );
@@ -336,14 +434,21 @@ export default function ProductsPage() {
   const initialConfigs = buildInitialConfigs(products, serverConfigs);
 
   const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
-    optimizationMode: "revenue",
     defaultCostPercent: "",
-    priceEndings: [9],
+    priceEndingDigits: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    priceEndingExact: [],
   });
+  const [priceEndingInput, setPriceEndingInput] = useState("");
+  const [priceEndingError, setPriceEndingError] = useState<string | null>(null);
   const [configs, setConfigs] = useState<ConfigMap>(initialConfigs);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [fineGrainedProductId, setFineGrainedProductId] = useState<string | null>(null);
   const [activating, setActivating] = useState(false);
+  const [activatingProgress, setActivatingProgress] = useState<{
+    current: number;
+    total: number;
+    productName: string;
+  } | null>(null);
   const [activateResult, setActivateResult] = useState<{
     success: boolean;
     message: string;
@@ -390,11 +495,86 @@ export default function ProductsPage() {
     openModal(fineGrainedModalRef);
   };
 
+  const toggleDigitEnding = (digit: number) => {
+    setGlobalSettings((prev) => ({
+      ...prev,
+      priceEndingDigits: prev.priceEndingDigits.includes(digit)
+        ? prev.priceEndingDigits.filter((d) => d !== digit)
+        : [...prev.priceEndingDigits, digit].sort((a, b) => a - b),
+    }));
+    setHasUnsavedChanges(true);
+  };
+
+  const toggleExactEnding = (value: number) => {
+    setGlobalSettings((prev) => ({
+      ...prev,
+      priceEndingExact: prev.priceEndingExact.includes(value)
+        ? prev.priceEndingExact.filter((e) => e !== value)
+        : [...prev.priceEndingExact, value].sort((a, b) => a - b),
+    }));
+    setHasUnsavedChanges(true);
+  };
+
+  const addCustomPriceEnding = () => {
+    setPriceEndingError(null);
+    const tokens = priceEndingInput
+      .split(",")
+      .map((t) => t.trim().replace(/^\./, "")); // strip leading dot
+
+    const newDigits: number[] = [];
+    const newExact: number[] = [];
+    const invalid: string[] = [];
+
+    for (const token of tokens) {
+      if (token === "") continue;
+      if (!/^\d{1,2}$/.test(token)) {
+        invalid.push(token);
+        continue;
+      }
+      const val = parseInt(token, 10);
+      if (token.length === 1) {
+        // Single digit → goes to last-digit row
+        if (!globalSettings.priceEndingDigits.includes(val)) newDigits.push(val);
+      } else {
+        // Two digits → goes to exact endings row
+        if (!globalSettings.priceEndingExact.includes(val)) newExact.push(val);
+      }
+    }
+
+    if (invalid.length > 0) {
+      setPriceEndingError(
+        `Invalid: ${invalid.map((t) => `"${t}"`).join(", ")} — enter 1 or 2 digits only (e.g. 9, 75, 99)`,
+      );
+      return;
+    }
+
+    if (newDigits.length > 0 || newExact.length > 0) {
+      setGlobalSettings((prev) => ({
+        ...prev,
+        priceEndingDigits: [...prev.priceEndingDigits, ...newDigits].sort((a, b) => a - b),
+        priceEndingExact: [...prev.priceEndingExact, ...newExact].sort((a, b) => a - b),
+      }));
+      setHasUnsavedChanges(true);
+    }
+    setPriceEndingInput("");
+  };
+
+  // Expand single-digit endings to all matching two-digit cent values, then
+  // union with exact endings. This is what gets sent to the API / pricing engine.
+  const allPriceEndings = Array.from(
+    new Set([
+      ...globalSettings.priceEndingDigits.flatMap((d) =>
+        Array.from({ length: 10 }, (_, t) => t * 10 + d),
+      ),
+      ...globalSettings.priceEndingExact,
+    ]),
+  ).sort((a, b) => a - b);
+
   const enabledProducts = products.filter((p) => configs[p.id]?.enabled);
 
   const hasConfigChanged = (productId: string): boolean => {
     const server = serverConfigsRef.current[productId];
-    if (!server) return true; // no active experiment — always send
+    if (!server) return true;
 
     const ui = configs[productId];
     if (!ui) return false;
@@ -404,10 +584,6 @@ export default function ProductsPage() {
 
     const uiCost = ui.costOfProduction !== "" ? parseFloat(ui.costOfProduction) : undefined;
     if (uiCost !== server.costOfProduction) return true;
-
-    if (ui.regionalVariation !== server.regionalVariation) return true;
-
-    if (globalSettings.optimizationMode !== (server.optimizationMode ?? "revenue")) return true;
 
     const uiExact = ui.exactPricePoints
       .split(",")
@@ -426,8 +602,6 @@ export default function ProductsPage() {
 
   const changedProducts = enabledProducts.filter((p) => hasConfigChanged(p.id));
 
-  // Products that have an active server experiment but are now toggled off.
-  // These need to be cancelled when the user saves.
   const productsToRemove = products.filter(
     (p) => !configs[p.id]?.enabled && serverConfigsRef.current[p.id]?.enabled,
   );
@@ -435,13 +609,14 @@ export default function ProductsPage() {
   const totalChanges = changedProducts.length + productsToRemove.length;
 
   // ---------------------------------------------------------------------------
-  // Activate handler — POST to /api/activate
+  // Activate handler — processes products one at a time to show progress
   // ---------------------------------------------------------------------------
 
   const handleSaveAndApplyConfirm = async () => {
     if (totalChanges === 0) return;
 
     setActivating(true);
+    setActivatingProgress(null);
     setActivateResult(null);
     closeModal(activateModalRef);
 
@@ -466,54 +641,60 @@ export default function ProductsPage() {
         }
       }
 
-      // Step 2 — activate/update changed products
-      if (changedProducts.length > 0) {
-        const activatePayload = {
-          action: "activate",
-          products: changedProducts.map((p) => {
-            const config = configs[p.id];
-            const exactPoints = config.exactPricePoints
-              .split(",")
-              .map((s) => parseFloat(s.trim()))
-              .filter((n) => !isNaN(n));
+      // Step 2 — activate/update changed products one at a time
+      for (let i = 0; i < changedProducts.length; i++) {
+        const p = changedProducts[i];
+        setActivatingProgress({
+          current: i + 1,
+          total: changedProducts.length,
+          productName: p.title,
+        });
 
-            let costOfProduction: number | null = null;
-            if (config.costOfProduction !== "") {
-              costOfProduction = parseFloat(config.costOfProduction);
-            } else if (globalSettings.defaultCostPercent !== "") {
-              const pct = parseFloat(globalSettings.defaultCostPercent);
-              if (!isNaN(pct) && pct > 0) {
-                costOfProduction = p.currentPrice * (pct / 100);
-              }
-            }
+        const config = configs[p.id];
+        const exactPoints = config.exactPricePoints
+          .split(",")
+          .map((s) => parseFloat(s.trim()))
+          .filter((n) => !isNaN(n));
 
-            const priorRate = config.priorRate !== "" ? parseFloat(config.priorRate) / 100 : null;
+        let costOfProduction: number | null = null;
+        if (config.costOfProduction !== "") {
+          costOfProduction = parseFloat(config.costOfProduction);
+        } else if (globalSettings.defaultCostPercent !== "") {
+          const pct = parseFloat(globalSettings.defaultCostPercent);
+          if (!isNaN(pct) && pct > 0) {
+            costOfProduction = p.currentPrice * (pct / 100);
+          }
+        }
 
-            return {
-              productId: p.id,
-              minPrice: parseFloat(config.minPrice),
-              maxPrice: parseFloat(config.maxPrice),
-              costOfProduction,
-              regionalVariation: config.regionalVariation,
-              exactPricePoints: exactPoints,
-              optimizationMode: globalSettings.optimizationMode,
-              priceEndings: globalSettings.priceEndings,
-              priorRate: !isNaN(priorRate as number) ? priorRate : null,
-              priorStrength: config.priorStrength,
-            };
-          }),
-        };
+        const priorRate = config.priorRate !== "" ? parseFloat(config.priorRate) / 100 : null;
 
         const activateRes = await fetch("/api/activate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(activatePayload),
+          body: JSON.stringify({
+            action: "activate",
+            products: [
+              {
+                productId: p.id,
+                minPrice: parseFloat(config.minPrice),
+                maxPrice: parseFloat(config.maxPrice),
+                costOfProduction,
+                regionalVariation: false,
+                exactPricePoints: exactPoints,
+                optimizationMode: "profit",
+                priceEndings: allPriceEndings,
+                priorRate: !isNaN(priorRate as number) ? priorRate : null,
+                priorStrength: config.priorStrength,
+              },
+            ],
+          }),
         });
+
         const activateData = (await activateRes.json()) as { error?: string; code?: string };
         if (!activateRes.ok) {
           setActivateResult({
             success: false,
-            message: activateData.error ?? "Activation failed. Please try again.",
+            message: `Failed to set up "${p.title}": ${activateData.error ?? "Activation failed. Please try again."}`,
             isEmbedError: activateData.code === "EMBED_NOT_ENABLED",
           });
           return;
@@ -530,11 +711,12 @@ export default function ProductsPage() {
       });
     } finally {
       setActivating(false);
+      setActivatingProgress(null);
     }
   };
 
   // ---------------------------------------------------------------------------
-  // Cancel handler — POST to /api/activate with action: cancel
+  // Cancel handler
   // ---------------------------------------------------------------------------
 
   const handleCancelConfirm = async () => {
@@ -576,6 +758,22 @@ export default function ProductsPage() {
     }
   };
 
+  const storeCurrency = products[0]?.currency ?? "USD";
+  // Extract just the symbol (e.g. "$", "£", "€") for column headers.
+  // Falls back to the currency code if the symbol can't be determined.
+  const currencySymbol = (() => {
+    try {
+      const parts = new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: storeCurrency,
+        minimumFractionDigits: 0,
+      }).formatToParts(0);
+      return parts.find((p) => p.type === "currency")?.value ?? storeCurrency;
+    } catch {
+      return storeCurrency;
+    }
+  })();
+
   const fineGrainedProduct = fineGrainedProductId
     ? products.find((p) => p.id === fineGrainedProductId)
     : null;
@@ -583,11 +781,16 @@ export default function ProductsPage() {
     ? configs[fineGrainedProductId]
     : null;
 
+  const presetExactValues = PRICE_ENDING_PRESETS.map((p) => p.value);
+  const customExactEndings = globalSettings.priceEndingExact.filter(
+    (e) => !presetExactValues.includes(e),
+  );
+
   return (
     <s-page heading="Product Setup">
 
       {/* ------------------------------------------------------------------ */}
-      {/* Result banners (success / error)                                    */}
+      {/* Result banners                                                       */}
       {/* ------------------------------------------------------------------ */}
       {activateResult && (
         <s-banner
@@ -611,9 +814,7 @@ export default function ProductsPage() {
         </s-banner>
       )}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Unsaved changes banner                                              */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Unsaved changes banner */}
       {hasUnsavedChanges && !activating && (
         <s-banner tone="warning" heading="You have unsaved changes">
           Click <s-text type="strong">Save and Apply</s-text> to save and apply your
@@ -621,16 +822,16 @@ export default function ProductsPage() {
         </s-banner>
       )}
 
-      {/* Loading banner */}
+      {/* Loading banner with per-product progress */}
       {activating && (
         <s-banner tone="info" heading="Processing…">
-          Please wait while we apply your configuration.
+          {activatingProgress
+            ? `Setting up ${activatingProgress.current} of ${activatingProgress.total} products: ${activatingProgress.productName}`
+            : "Please wait while we apply your configuration."}
         </s-banner>
       )}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Navigation blocker banner                                           */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Navigation blocker banner */}
       {blocker.state === "blocked" && (
         <s-banner tone="critical" heading="Leave without saving?">
           <s-stack direction="inline" gap="base">
@@ -656,86 +857,167 @@ export default function ProductsPage() {
       {/* ------------------------------------------------------------------ */}
       <s-section heading="Global settings">
         <s-stack direction="block" gap="base">
-          <s-paragraph>
-            These settings apply to all products unless overridden per-product.
-          </s-paragraph>
-
-          {/* Optimisation goal */}
-          <s-select
-            label="Optimisation goal"
-            value={globalSettings.optimizationMode}
-            onChange={(e: Event) => {
+          {/* Default cost of production */}
+          <s-text-field
+            label="Default cost of production (% of current price) — applies only when products don't have a specific cost of production already set"
+            value={globalSettings.defaultCostPercent}
+            placeholder="e.g. 30 (= 30% of price)"
+            onInput={(e: Event) => {
               setGlobalSettings((prev) => ({
                 ...prev,
-                optimizationMode: (e.target as HTMLElementTagNameMap["s-select"]).value as
-                  | "revenue"
-                  | "profit",
+                defaultCostPercent: (e.target as HTMLInputElement).value,
               }));
               setHasUnsavedChanges(true);
             }}
-          >
-            <s-option value="revenue">Revenue</s-option>
-            <s-option value="profit">Profit</s-option>
-          </s-select>
-
-          {/* Default cost of production — only visible in profit mode */}
-          {globalSettings.optimizationMode === "profit" && (
-            <s-text-field
-              label="Default cost of production (% of current price)"
-              value={globalSettings.defaultCostPercent}
-              placeholder="e.g. 30 (= 30% of price). Overridden by per-product cost."
-              onInput={(e: Event) => {
-                setGlobalSettings((prev) => ({
-                  ...prev,
-                  defaultCostPercent: (e.target as HTMLInputElement).value,
-                }));
-                setHasUnsavedChanges(true);
-              }}
-            />
-          )}
+          />
 
           {/* Price endings */}
-          <s-stack direction="block" gap="small-100">
-            <s-text type="strong">Price endings to test</s-text>
-            <s-paragraph>
-              Click digits to toggle. Test prices will only end in the selected
-              digits (e.g. selecting 4, 5, 9 allows $4.64 and $2.85 but not
-              $4.98 — that rounds to the nearest valid price).
-            </s-paragraph>
-            <div style={{ display: "flex", gap: "8px" }}>
-              {Array.from({ length: 10 }, (_, digit) => {
-                const selected = globalSettings.priceEndings.includes(digit);
-                return (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+              <s-text type="strong">Allowable price endings</s-text>
+              <InfoTooltip content={PRICE_ENDINGS_TOOLTIP} />
+            </div>
+
+            {/* Single-digit chips (last-digit matching) */}
+            <div style={{ marginBottom: "8px" }}>
+              <div style={{ marginBottom: "4px" }}>
+                <s-text>Last digit (x.X<s-text type="strong">d</s-text>) — all selected by default</s-text>
+              </div>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {Array.from({ length: 10 }, (_, d) => {
+                  const selected = globalSettings.priceEndingDigits.includes(d);
+                  return (
+                    <span
+                      key={d}
+                      role="checkbox"
+                      aria-checked={selected}
+                      onClick={() => toggleDigitEnding(d)}
+                      style={{
+                        cursor: "pointer",
+                        padding: "5px 12px",
+                        borderRadius: "4px",
+                        border: `1px solid ${selected ? "#303030" : "#d9d9d9"}`,
+                        color: selected ? "#303030" : "#999",
+                        fontWeight: selected ? 700 : 400,
+                        userSelect: "none",
+                        fontSize: "0.9rem",
+                        minWidth: "32px",
+                        textAlign: "center",
+                      }}
+                    >
+                      {d}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Exact two-digit chips */}
+            <div>
+              <div style={{ marginBottom: "4px" }}>
+                <s-text>Exact endings (x.<s-text type="strong">dd</s-text>) — add specific cent values</s-text>
+              </div>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                {PRICE_ENDING_PRESETS.map(({ label, value }) => {
+                  const selected = globalSettings.priceEndingExact.includes(value);
+                  return (
+                    <span
+                      key={value}
+                      role="checkbox"
+                      aria-checked={selected}
+                      onClick={() => toggleExactEnding(value)}
+                      style={{
+                        cursor: "pointer",
+                        padding: "5px 12px",
+                        borderRadius: "4px",
+                        border: `1px solid ${selected ? "#303030" : "#d9d9d9"}`,
+                        color: selected ? "#303030" : "#999",
+                        fontWeight: selected ? 700 : 400,
+                        userSelect: "none",
+                        fontSize: "0.9rem",
+                      }}
+                    >
+                      {label}
+                    </span>
+                  );
+                })}
+
+                {/* Custom non-preset exact endings */}
+                {customExactEndings.map((e) => (
                   <span
-                    key={digit}
-                    role="checkbox"
-                    aria-checked={selected}
-                    onClick={() => {
-                      setGlobalSettings((prev) => ({
-                        ...prev,
-                        priceEndings: selected
-                          ? prev.priceEndings.filter((d) => d !== digit)
-                          : [...prev.priceEndings, digit].sort((a, b) => a - b),
-                      }));
-                      setHasUnsavedChanges(true);
-                    }}
+                    key={e}
                     style={{
-                      cursor: "pointer",
-                      padding: "6px 14px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      padding: "5px 10px",
                       borderRadius: "4px",
-                      border: `1px solid ${selected ? "#303030" : "#d9d9d9"}`,
-                      color: selected ? "#303030" : "#999",
-                      fontWeight: selected ? 700 : 400,
-                      userSelect: "none",
-                      fontSize: "1rem",
+                      border: "1px solid #303030",
+                      color: "#303030",
+                      fontWeight: 700,
+                      fontSize: "0.9rem",
                     }}
                   >
-                    {digit}
+                    .{String(e).padStart(2, "0")}
+                    <button
+                      onClick={() => toggleExactEnding(e)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        padding: "0 2px",
+                        fontSize: "14px",
+                        color: "#666",
+                        lineHeight: 1,
+                      }}
+                      aria-label={`Remove .${String(e).padStart(2, "0")}`}
+                    >
+                      ×
+                    </button>
                   </span>
-                );
-              })}
+                ))}
+
+                {/* Custom ending input */}
+                <input
+                  type="text"
+                  value={priceEndingInput}
+                  onChange={(e) => {
+                    setPriceEndingInput(e.target.value);
+                    setPriceEndingError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addCustomPriceEnding();
+                  }}
+                  placeholder="e.g. 5, 75, .99"
+                  style={{
+                    width: "130px",
+                    padding: "5px 10px",
+                    border: `1px solid ${priceEndingError ? "#d82c0d" : "#d9d9d9"}`,
+                    borderRadius: "4px",
+                    fontSize: "14px",
+                  }}
+                />
+                <button
+                  onClick={addCustomPriceEnding}
+                  style={{
+                    padding: "5px 10px",
+                    border: "1px solid #8c9196",
+                    borderRadius: "4px",
+                    background: "#fff",
+                    cursor: "pointer",
+                    fontSize: "14px",
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              {priceEndingError && (
+                <div style={{ marginTop: "6px", color: "#d82c0d", fontSize: "13px" }}>
+                  {priceEndingError}
+                </div>
+              )}
             </div>
-          </s-stack>
+          </div>
         </s-stack>
       </s-section>
 
@@ -768,44 +1050,72 @@ export default function ProductsPage() {
       </s-section>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Product list                                                        */}
+      {/* Product table                                                        */}
       {/* ------------------------------------------------------------------ */}
-      {products.map((product) => {
-        const config = configs[product.id];
-        if (!config) return null;
+      <s-section heading="Products">
+        <s-paragraph>
+          Set the minimum and maximum price allowed in price tests, and costs of production so that the system can optimise based on profit margin.
+        </s-paragraph>
+        {/* Table header */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(140px, 2fr) 85px 80px 95px 95px 95px 120px",
+            gap: "8px",
+            padding: "8px 16px",
+            borderBottom: "2px solid #e1e3e5",
+            marginBottom: "4px",
+          }}
+        >
+          <s-text type="strong">Product</s-text>
+          <s-text type="strong">Price ({currencySymbol})</s-text>
+          <s-text type="strong">Include</s-text>
+          <s-text type="strong">Min ({currencySymbol})</s-text>
+          <s-text type="strong">Max ({currencySymbol})</s-text>
+          <s-text type="strong">Cost ({currencySymbol})</s-text>
+          <div />
+        </div>
 
-        const minPriceNum = parseFloat(config.minPrice);
-        const costNum = parseFloat(config.costOfProduction);
-        const showCostWarning =
-          config.costOfProduction !== "" &&
-          !isNaN(costNum) &&
-          !isNaN(minPriceNum) &&
-          minPriceNum < costNum;
+        {/* Product rows */}
+        {products.map((product) => {
+          const config = configs[product.id];
+          if (!config) return null;
 
-        return (
-          <s-section key={product.id}>
-            <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
-              {/* Product info */}
-              <div style={{ minWidth: "200px" }}>
-                <s-stack direction="block" gap="small-100">
+          const minPriceNum = parseFloat(config.minPrice);
+          const costNum = parseFloat(config.costOfProduction);
+          const showCostWarning =
+            config.enabled &&
+            config.costOfProduction !== "" &&
+            !isNaN(costNum) &&
+            !isNaN(minPriceNum) &&
+            minPriceNum < costNum;
+
+          return (
+            <div key={product.id}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(140px, 2fr) 85px 80px 95px 95px 95px 120px",
+                  gap: "8px",
+                  padding: "10px 16px",
+                  alignItems: "center",
+                  borderBottom: "1px solid #f1f1f1",
+                }}
+              >
+                {/* Product name */}
+                <div style={{ overflow: "hidden" }}>
                   <s-text type="strong">{product.title}</s-text>
-                  <s-paragraph>
-                    Current price: ${product.currentPrice.toFixed(2)}{" "}
-                    {product.currency}
-                  </s-paragraph>
-                  {product.unitCost != null && (
-                    <s-paragraph>
-                      Unit cost: ${product.unitCost.toFixed(2)}
-                    </s-paragraph>
-                  )}
-                </s-stack>
-              </div>
+                </div>
 
-              {/* Controls */}
-              <div style={{ flex: 1 }}>
+                {/* Current price */}
+                <div style={{ color: "#6d7175", fontSize: "14px" }}>
+                  {product.currentPrice.toFixed(2)}
+                </div>
+
+                {/* Include toggle */}
                 <s-switch
-                  label="Include in optimiser"
                   checked={config.enabled}
+                  aria-label={`Include ${product.title} in optimiser`}
                   onChange={(e: Event) => {
                     updateConfig(product.id, {
                       enabled: (e.target as HTMLInputElement).checked,
@@ -813,92 +1123,80 @@ export default function ProductsPage() {
                   }}
                 />
 
-                {config.enabled && product.hasMixedPrices && (
-                  <s-banner tone="warning">
-                    This product has variants with different base prices.
-                    Price experiments work best when all variants share the
-                    same price. Consider excluding this product or adjusting
-                    variant prices first.
-                  </s-banner>
-                )}
+                {/* Min price */}
+                <input
+                  type="number"
+                  value={config.minPrice}
+                  disabled={!config.enabled || activating}
+                  style={tableInputStyle(!config.enabled || activating)}
+                  onChange={(e) => {
+                    updateConfig(product.id, { minPrice: e.target.value });
+                  }}
+                />
 
-                {config.enabled && (
-                  <s-stack direction="block" gap="base">
-                    <s-stack direction="inline" gap="base">
-                      <s-text-field
-                        label="Min price ($)"
-                        value={config.minPrice}
-                        onInput={(e: Event) => {
-                          updateConfig(product.id, {
-                            minPrice: (e.target as HTMLInputElement).value,
-                          });
-                        }}
-                      />
-                      <s-text-field
-                        label="Max price ($)"
-                        value={config.maxPrice}
-                        onInput={(e: Event) => {
-                          updateConfig(product.id, {
-                            maxPrice: (e.target as HTMLInputElement).value,
-                          });
-                        }}
-                      />
-                      {globalSettings.optimizationMode === "profit" && (
-                        <s-text-field
-                          label="Cost of production ($)"
-                          value={config.costOfProduction}
-                          placeholder="Optional"
-                          onInput={(e: Event) => {
-                            updateConfig(product.id, {
-                              costOfProduction: (e.target as HTMLInputElement).value,
-                            });
-                          }}
-                        />
-                      )}
-                    </s-stack>
+                {/* Max price */}
+                <input
+                  type="number"
+                  value={config.maxPrice}
+                  disabled={!config.enabled || activating}
+                  style={tableInputStyle(!config.enabled || activating)}
+                  onChange={(e) => {
+                    updateConfig(product.id, { maxPrice: e.target.value });
+                  }}
+                />
 
-                    {showCostWarning && (
-                      <s-banner
-                        tone="critical"
-                        heading="Min price is below cost of production"
-                      >
-                        Your minimum price of ${config.minPrice} is lower than
-                        your cost of production (${config.costOfProduction}). You
-                        would lose money on each sale at this price.
-                      </s-banner>
-                    )}
+                {/* Cost of production */}
+                <input
+                  type="number"
+                  value={config.costOfProduction}
+                  disabled={!config.enabled || activating}
+                  placeholder="Default (set above)"
+                  style={tableInputStyle(!config.enabled || activating)}
+                  onChange={(e) => {
+                    updateConfig(product.id, { costOfProduction: e.target.value });
+                  }}
+                />
 
-                    <s-stack direction="inline" gap="base">
-                      <s-switch
-                        label="Regional variation"
-                        checked={config.regionalVariation}
-                        onChange={(e: Event) => {
-                          updateConfig(product.id, {
-                            regionalVariation: (e.target as HTMLInputElement).checked,
-                          });
-                        }}
-                      />
-                      <s-button
-                        variant="tertiary"
-                        onClick={() => openFineGrained(product.id)}
-                      >
-                        Fine-grained controls
-                      </s-button>
-                    </s-stack>
-                  </s-stack>
-                )}
+                {/* Additional options */}
+                <s-button
+                  variant="tertiary"
+                  disabled={!config.enabled || activating}
+                  onClick={() => openFineGrained(product.id)}
+                >
+                  Additional options
+                </s-button>
               </div>
+
+              {/* Per-row warnings */}
+              {config.enabled && product.hasMixedPrices && (
+                <div style={{ padding: "0 16px 8px" }}>
+                  <s-banner tone="warning">
+                    This product has variants with different base prices. Currently the app is only
+                    configured to apply the same set of experiment prices to all variants, so you
+                    may want to consider excluding this product. Please contact us if adding
+                    functionality for multi-price products would be beneficial.
+                  </s-banner>
+                </div>
+              )}
+              {showCostWarning && (
+                <div style={{ padding: "0 16px 8px" }}>
+                  <s-banner tone="critical" heading="Min price is below cost of production">
+                    Your minimum price of ${config.minPrice} is lower than your cost of production
+                    (${config.costOfProduction}). You would lose money on each sale at this price.
+                  </s-banner>
+                </div>
+              )}
             </div>
-          </s-section>
-        );
-      })}
+          );
+        })}
+      </s-section>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Fine-grained controls modal                                         */}
+      {/* Additional options modal                                            */}
       {/* ------------------------------------------------------------------ */}
       <s-modal
         id="fine-grained-modal"
-        heading={`Fine-grained controls — ${fineGrainedProduct?.title ?? ""}`}
+        heading={`Additional options — ${fineGrainedProduct?.title ?? ""}`}
         ref={fineGrainedModalRef}
       >
         <s-stack direction="block" gap="base">
@@ -906,7 +1204,7 @@ export default function ProductsPage() {
             <s-stack direction="block" gap="base">
               <s-paragraph>
                 Enter specific prices to test, separated by commas. When set,
-                these override the min / max range above.
+                these override the min / max range.
               </s-paragraph>
               <s-text-field
                 label="Price points ($)"
@@ -922,15 +1220,15 @@ export default function ProductsPage() {
             </s-stack>
           </s-section>
 
-          <s-section heading="Prior conversion rate assumption">
+          <s-section heading="Initial conversion rate assumption">
             <s-stack direction="block" gap="base">
               <s-paragraph>
-                When there is little or no data for this product, the algorithm assumes a
-                baseline conversion rate to avoid jumping to conclusions too quickly. The
-                default is 3% — a reasonable starting point for most online stores. You
-                can adjust this if you know your store converts significantly higher or
-                lower. Over time, as real data accumulates, this assumption has less and
-                less effect on the result.
+                The algorithm starts with an initial baseline assumption, which helps avoid
+                jumping to conclusions too quickly. As data is gathered this assumption is
+                overridden by the actual conversion rate. The default assumption is 3%, but
+                if you know conversion is significantly higher or lower than this then you may
+                want to adjust this setting. This will only slightly alter the initial algorithm
+                behaviour until it learns the true rates.
               </s-paragraph>
               <s-text-field
                 label="Assumed conversion rate (%)"
@@ -949,16 +1247,14 @@ export default function ProductsPage() {
           <s-section heading="Assumption strength">
             <s-stack direction="block" gap="base">
               <s-paragraph>
-                Controls how quickly real data overrides the initial assumption above.
-                A <s-text type="strong">stronger</s-text> prior means more data is
-                needed before the algorithm shifts probabilities — useful for products
-                with high traffic where you want stable, confident updates.
-                A <s-text type="strong">weaker</s-text> prior means the algorithm
-                reacts faster to early data — useful for lower-traffic products where
-                you want quicker adaptation, but be aware it may jump to conclusions
-                before the longer-term picture is clear. When you have hundreds of
-                impressions and multiple purchases per day, the strength setting makes
-                little practical difference.
+                Controls how quickly real data overrides the initial conversion rate
+                assumption above. A <s-text type="strong">stronger</s-text> assumption
+                means more data is needed before the true conversion rate overrides the
+                initial assumed rate — useful for products with high traffic where you
+                want stable, confident updates. A <s-text type="strong">weaker</s-text>{" "}
+                assumption means the algorithm reacts faster to early data — useful for
+                lower-traffic products where you want quicker adaptation, but be aware it
+                may jump to conclusions, meaning some volatility before enough data is gathered to understand the true longer-term picture.
               </s-paragraph>
               <s-select
                 label="Assumption strength"
@@ -984,6 +1280,12 @@ export default function ProductsPage() {
               price points vs. exploiting the current best performer.
             </s-banner>
           </s-section>
+
+          <s-section heading="Regional variation — coming soon">
+            <s-banner tone="info" heading="Coming soon">
+              Apply different pricing strategies based on the visitor's geographic region.
+            </s-banner>
+          </s-section>
         </s-stack>
 
         <s-button
@@ -1004,13 +1306,7 @@ export default function ProductsPage() {
           {changedProducts.length > 0 && (
             <>
               <s-paragraph>
-                The following products will be enrolled in price optimisation using{" "}
-                <s-text type="strong">
-                  {globalSettings.optimizationMode === "revenue"
-                    ? "revenue maximisation"
-                    : "profit maximisation"}
-                </s-text>
-                :
+                The following products will be enrolled in price optimisation:
               </s-paragraph>
               <s-unordered-list>
                 {changedProducts.map((p) => (
@@ -1022,7 +1318,6 @@ export default function ProductsPage() {
                       {configs[p.id].costOfProduction
                         ? `, cost $${configs[p.id].costOfProduction}`
                         : ""}
-                      {configs[p.id].regionalVariation ? ", regional variation on" : ""}
                     </s-text>
                   </s-list-item>
                 ))}
@@ -1049,7 +1344,7 @@ export default function ProductsPage() {
               All enabled products already match their active experiment config.
             </s-banner>
           )}
-          {changedProducts.length > 0 && globalSettings.priceEndings.length === 0 && (
+          {changedProducts.length > 0 && allPriceEndings.length === 0 && (
             <s-banner tone="warning" heading="No price endings selected">
               Select at least one price ending in Global Settings.
             </s-banner>
@@ -1060,7 +1355,7 @@ export default function ProductsPage() {
           slot="primary-action"
           variant="primary"
           onClick={handleSaveAndApplyConfirm}
-          {...(totalChanges === 0 || (changedProducts.length > 0 && globalSettings.priceEndings.length === 0)
+          {...(totalChanges === 0 || (changedProducts.length > 0 && allPriceEndings.length === 0)
             ? { disabled: true }
             : {})}
         >

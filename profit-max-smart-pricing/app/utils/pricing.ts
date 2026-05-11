@@ -4,7 +4,7 @@
 // Generates a set of test price points for a multi-armed bandit experiment.
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_ALLOWED_ENDINGS = [9]; // last digit of the price in cents
+export const DEFAULT_ALLOWED_ENDINGS = [99]; // exact two-digit cent value (0–99)
 const MIN_PRICE_GAP_RATIO = 0.02; // 2% minimum gap between adjacent points
 const MAX_PRICE_POINTS = 5;
 const MIN_PRICE_POINTS = 2;
@@ -17,14 +17,14 @@ export class PricePointError extends Error {
 }
 
 /**
- * Returns the last digit of a price in cents (e.g. $19.94 → 4, $19.99 → 9).
+ * Returns the two-digit cent value of a price (e.g. $19.94 → 94, $19.99 → 99, $20.00 → 0).
  */
-function getLastDigit(price: number): number {
-  return Math.round(price * 100) % 10;
+function getTwoCentDigits(price: number): number {
+  return Math.round(price * 100) % 100;
 }
 
 /**
- * Round a price to the nearest value whose last cent-digit is in allowedEndings.
+ * Round a price to the nearest value whose two-digit cent value is in allowedEndings.
  * Searches outward from the price by ±0.01 increments (trying +offset before
  * −offset at each step), skipping candidates outside [minPrice, maxPrice].
  * Returns null if no valid ending can be found within the allowed range.
@@ -36,16 +36,16 @@ function roundToNearestEnding(
   maxPrice: number,
 ): number | null {
   const base = parseFloat(price.toFixed(2));
-  if (allowedEndings.includes(getLastDigit(base))) {
+  if (allowedEndings.includes(getTwoCentDigits(base))) {
     return base;
   }
   for (let cents = 1; cents <= 99; cents++) {
     const higher = parseFloat((base + cents / 100).toFixed(2));
-    if (higher <= maxPrice && allowedEndings.includes(getLastDigit(higher))) {
+    if (higher <= maxPrice && allowedEndings.includes(getTwoCentDigits(higher))) {
       return higher;
     }
     const lower = parseFloat((base - cents / 100).toFixed(2));
-    if (lower >= minPrice && allowedEndings.includes(getLastDigit(lower))) {
+    if (lower >= minPrice && allowedEndings.includes(getTwoCentDigits(lower))) {
       return lower;
     }
   }
@@ -101,7 +101,7 @@ function validatePoints(points: number[]): void {
 
 /**
  * Generate evenly-spaced test price points between minPrice and maxPrice,
- * rounded to the nearest value whose last cent-digit is in allowedEndings,
+ * rounded to the nearest value whose two-digit cent value is in allowedEndings,
  * with duplicates and out-of-range points removed.
  *
  * The number of price points is determined upfront by how many 2%-gapped
@@ -109,8 +109,8 @@ function validatePoints(points: number[]): void {
  *
  * @param minPrice        Lower bound of the price range (inclusive).
  * @param maxPrice        Upper bound of the price range (inclusive).
- * @param allowedEndings  Allowed last digits in cents (default: [9, 4, 0],
- *                        matching prices like x.x9, x.x4, or x.x0).
+ * @param allowedEndings  Allowed two-digit cent values (default: [99],
+ *                        matching prices like x.99).
  * @param exactPricePoints  Merchant override — if provided and non-empty, these
  *                          prices are validated and returned directly (sorted).
  * @returns Sorted array of price points.
