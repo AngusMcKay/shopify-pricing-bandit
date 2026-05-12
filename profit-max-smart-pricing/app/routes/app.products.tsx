@@ -572,6 +572,28 @@ export default function ProductsPage() {
 
   const enabledProducts = products.filter((p) => configs[p.id]?.enabled);
 
+  // Returns true if min/max/exact price points changed — requires a full Shopify teardown.
+  // Also true for brand-new experiments (no active server config).
+  const isPricePointsChange = (productId: string): boolean => {
+    const server = serverConfigsRef.current[productId];
+    if (!server || !server.enabled) return true;
+
+    const ui = configs[productId];
+    if (!ui) return false;
+
+    if (parseFloat(ui.minPrice) !== server.minPrice) return true;
+    if (parseFloat(ui.maxPrice) !== server.maxPrice) return true;
+
+    const uiExact = ui.exactPricePoints
+      .split(",")
+      .map((s) => parseFloat(s.trim()))
+      .filter((n) => !isNaN(n));
+    if (JSON.stringify(uiExact) !== JSON.stringify(server.exactPricePoints)) return true;
+
+    return false;
+  };
+
+  // Returns true if any config value changed (superset of isPricePointsChange).
   const hasConfigChanged = (productId: string): boolean => {
     const server = serverConfigsRef.current[productId];
     if (!server) return true;
@@ -579,20 +601,12 @@ export default function ProductsPage() {
     const ui = configs[productId];
     if (!ui) return false;
 
-    // If server-side not active, enabling it is always a change
     if (!server.enabled) return true;
 
-    if (parseFloat(ui.minPrice) !== server.minPrice) return true;
-    if (parseFloat(ui.maxPrice) !== server.maxPrice) return true;
+    if (isPricePointsChange(productId)) return true;
 
     const uiCost = ui.costOfProduction !== "" ? parseFloat(ui.costOfProduction) : undefined;
     if (uiCost !== server.costOfProduction) return true;
-
-    const uiExact = ui.exactPricePoints
-      .split(",")
-      .map((s) => parseFloat(s.trim()))
-      .filter((n) => !isNaN(n));
-    if (JSON.stringify(uiExact) !== JSON.stringify(server.exactPricePoints)) return true;
 
     const uiPriorRate = ui.priorRate !== "" ? parseFloat(ui.priorRate) / 100 : undefined;
     const serverPriorRate = server.priorRate ?? undefined;
@@ -606,6 +620,11 @@ export default function ProductsPage() {
   };
 
   const changedProducts = enabledProducts.filter((p) => hasConfigChanged(p.id));
+
+  // Products needing a full Shopify teardown/rebuild (new or price points changed)
+  const restartProducts = changedProducts.filter((p) => isPricePointsChange(p.id));
+  // Products where only cost/prior settings changed — DB update only, test continues
+  const configOnlyProducts = changedProducts.filter((p) => !isPricePointsChange(p.id));
 
   const productsToRemove = products.filter(
     (p) => !configs[p.id]?.enabled && serverConfigsRef.current[p.id]?.enabled,
@@ -661,14 +680,14 @@ export default function ProductsPage() {
           .map((s) => parseFloat(s.trim()))
           .filter((n) => !isNaN(n));
 
-        let costOfProduction: number | null = null;
+        let costOfProduction: number;
         if (config.costOfProduction !== "") {
           costOfProduction = parseFloat(config.costOfProduction);
         } else if (globalSettings.defaultCostPercent !== "") {
           const pct = parseFloat(globalSettings.defaultCostPercent);
-          if (!isNaN(pct) && pct > 0) {
-            costOfProduction = p.currentPrice * (pct / 100);
-          }
+          costOfProduction = (!isNaN(pct) && pct > 0) ? p.currentPrice * (pct / 100) : 0;
+        } else {
+          costOfProduction = 0;
         }
 
         const priorRate = config.priorRate !== "" ? parseFloat(config.priorRate) / 100 : null;
@@ -681,6 +700,7 @@ export default function ProductsPage() {
             products: [
               {
                 productId: p.id,
+                configOnly: !isPricePointsChange(p.id),
                 minPrice: parseFloat(config.minPrice),
                 maxPrice: parseFloat(config.maxPrice),
                 costOfProduction,
@@ -1301,22 +1321,37 @@ export default function ProductsPage() {
       {/* ------------------------------------------------------------------ */}
       <s-modal id="activate-modal" heading="Save and Apply" ref={activateModalRef}>
         <s-stack direction="block" gap="base">
-          {changedProducts.length > 0 && (
+          {restartProducts.length > 0 && (
             <>
               <s-paragraph>
-                The following products will be enrolled in price optimisation:
+                New price tests will be started for the following products:
               </s-paragraph>
               <s-unordered-list>
-                {changedProducts.map((p) => (
+                {restartProducts.map((p) => (
                   <s-list-item key={p.id}>
                     <s-text type="strong">{p.title}</s-text>
                     <s-text type="generic">
                       {" "}
-                      — ${configs[p.id].minPrice} to ${configs[p.id].maxPrice}
+                      — {currencySymbol}{configs[p.id].minPrice} to {currencySymbol}{configs[p.id].maxPrice}
                       {configs[p.id].costOfProduction
-                        ? `, cost $${configs[p.id].costOfProduction}`
+                        ? `, cost ${currencySymbol}${configs[p.id].costOfProduction}`
                         : ""}
                     </s-text>
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+            </>
+          )}
+          {configOnlyProducts.length > 0 && (
+            <>
+              <s-paragraph>
+                Assumptions and/or cost of production will be updated for the following products{" "}
+                <s-text type="generic">(price tests will continue but will factor in the new settings from the next algorithm update)</s-text>:
+              </s-paragraph>
+              <s-unordered-list>
+                {configOnlyProducts.map((p) => (
+                  <s-list-item key={p.id}>
+                    <s-text type="strong">{p.title}</s-text>
                   </s-list-item>
                 ))}
               </s-unordered-list>
@@ -1342,9 +1377,17 @@ export default function ProductsPage() {
               All enabled products already match their active experiment config.
             </s-banner>
           )}
-          {changedProducts.length > 0 && allPriceEndings.length === 0 && (
+          {restartProducts.length > 0 && allPriceEndings.length === 0 && (
             <s-banner tone="warning" heading="No price endings selected">
               Select at least one price ending in Global Settings.
+            </s-banner>
+          )}
+          {restartProducts.some((p) => configs[p.id].costOfProduction === "") &&
+            globalSettings.defaultCostPercent === "" && (
+            <s-banner tone="critical" heading="No cost of production set for some products">
+              Some products have no cost of production specified and no global default is set, so
+              costs for these products will be recorded as zero and the price tests will operate on
+              this basis. You can update the cost later without restarting the test.
             </s-banner>
           )}
         </s-stack>
@@ -1353,7 +1396,7 @@ export default function ProductsPage() {
           slot="primary-action"
           variant="primary"
           onClick={handleSaveAndApplyConfirm}
-          {...(totalChanges === 0 || (changedProducts.length > 0 && allPriceEndings.length === 0)
+          {...(totalChanges === 0 || (restartProducts.length > 0 && allPriceEndings.length === 0)
             ? { disabled: true }
             : {})}
         >

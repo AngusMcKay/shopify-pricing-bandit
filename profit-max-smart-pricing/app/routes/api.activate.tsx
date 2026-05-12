@@ -103,6 +103,7 @@ interface GetProductOptionsResponse {
 
 interface ProductActivationConfig {
   productId: string;
+  configOnly?: boolean; // true = only cost/prior changed, skip Shopify teardown
   minPrice: number;
   maxPrice: number;
   costOfProduction?: number | null;
@@ -319,9 +320,82 @@ async function handleActivate(
   const merchantId = session.shop;
 
   // -------------------------------------------------------------------------
-  // Part 3 — Embed status check
-  // Before doing any work, verify the Theme App Extension is enabled on the
-  // merchant's published theme. Return 403 if not — don't touch Shopify state.
+  // Part 3a — Config-only updates (no Shopify changes needed)
+  // For products where only cost/prior settings changed, just upsert the EAV
+  // params against the existing experiment. The bandit picks them up next run.
+  // -------------------------------------------------------------------------
+  const configOnlyProducts = products.filter((c) => c.configOnly);
+  const fullRestartProducts = products.filter((c) => !c.configOnly);
+
+  for (const config of configOnlyProducts) {
+    const existingExperiment = await db.experimentLive.findFirst({
+      where: {
+        MerchantId: merchantId,
+        ProductId: config.productId,
+        Status: { in: ["Active", "Paused"] },
+      },
+      select: { ExperimentDatetimeSubmitted: true },
+    });
+
+    if (!existingExperiment) {
+      // Shouldn't happen (frontend only sends configOnly for active experiments),
+      // but if it does, skip gracefully — nothing to update.
+      continue;
+    }
+
+    const dt = existingExperiment.ExperimentDatetimeSubmitted;
+
+    // Get a canonical VariantId for the EAV rows (any active setup row will do)
+    const anySetup = await db.experimentSetup.findFirst({
+      where: { MerchantId: merchantId, ProductId: config.productId, ExperimentDatetimeSubmitted: dt, IsActive: true },
+      select: { BaseVariantId: true },
+    });
+    const canonicalVariantId = anySetup?.BaseVariantId ?? "";
+
+    await db.$transaction(async (tx) => {
+      // Remove the three mutable params, then re-insert with current values.
+      await tx.experimentMerchantInputs.deleteMany({
+        where: {
+          MerchantId: merchantId,
+          ProductId: config.productId,
+          ExperimentDatetimeSubmitted: dt,
+          ExperimentParameter: { in: ["CostOfProduction", "PriorRate", "PriorStrength"] },
+        },
+      });
+
+      const eavParams: Array<[string, string]> = [];
+      if (config.costOfProduction != null) {
+        eavParams.push(["CostOfProduction", config.costOfProduction.toFixed(2)]);
+      }
+      if (config.priorRate != null) {
+        eavParams.push(["PriorRate", config.priorRate.toFixed(4)]);
+      }
+      if (config.priorStrength != null) {
+        eavParams.push(["PriorStrength", config.priorStrength]);
+      }
+
+      if (eavParams.length > 0) {
+        await tx.experimentMerchantInputs.createMany({
+          data: eavParams.map(([param, value]) => ({
+            MerchantId: merchantId,
+            ExperimentDatetimeSubmitted: dt,
+            ProductId: config.productId,
+            VariantId: canonicalVariantId,
+            ExperimentParameter: param,
+            ExperimentParameterValue: value,
+          })),
+        });
+      }
+    });
+  }
+
+  // If all products were config-only, we're done — no Shopify work needed.
+  if (fullRestartProducts.length === 0) {
+    return Response.json({ success: true }, { status: 200 });
+  }
+
+  // -------------------------------------------------------------------------
+  // Part 3b — Embed status check (only needed when touching Shopify variants)
   // -------------------------------------------------------------------------
   const embedEnabled = await isEmbedEnabledOnPublishedTheme(admin);
   if (!embedEnabled) {
@@ -340,7 +414,7 @@ async function handleActivate(
   const experimentDatetime = new Date();
 
   // Process each product sequentially to avoid overwhelming the Shopify API.
-  for (const config of products) {
+  for (const config of fullRestartProducts) {
     // Fetch current variants for this product
     const variantsRes = await admin.graphql(GET_PRODUCT_VARIANTS_QUERY, {
       variables: { id: config.productId },
