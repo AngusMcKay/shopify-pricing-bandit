@@ -352,14 +352,31 @@ async function handleActivate(
     });
     const canonicalVariantId = anySetup?.BaseVariantId ?? "";
 
+    // Read current mutable param values before overwriting (for audit history)
+    const mutableParams = ["CostOfProduction", "PriorRate", "PriorStrength"];
+    const currentEavRows = await db.experimentMerchantInputs.findMany({
+      where: {
+        MerchantId: merchantId,
+        ProductId: config.productId,
+        ExperimentDatetimeSubmitted: dt,
+        ExperimentParameter: { in: mutableParams },
+      },
+      select: { ExperimentParameter: true, ExperimentParameterValue: true },
+    });
+    const currentValues = Object.fromEntries(
+      currentEavRows.map((r) => [r.ExperimentParameter, r.ExperimentParameterValue]),
+    );
+
+    const now = new Date();
+
     await db.$transaction(async (tx) => {
-      // Remove the three mutable params, then re-insert with current values.
+      // Remove the mutable params, then re-insert with current values.
       await tx.experimentMerchantInputs.deleteMany({
         where: {
           MerchantId: merchantId,
           ProductId: config.productId,
           ExperimentDatetimeSubmitted: dt,
-          ExperimentParameter: { in: ["CostOfProduction", "PriorRate", "PriorStrength"] },
+          ExperimentParameter: { in: mutableParams },
         },
       });
 
@@ -385,6 +402,32 @@ async function handleActivate(
             ExperimentParameterValue: value,
           })),
         });
+      }
+
+      // Audit history — one row per param that actually changed
+      const historyRows: Array<{
+        MerchantId: string; ProductId: string;
+        ExperimentDatetimeSubmitted: Date; Parameter: string;
+        OldValue: string | null; NewValue: string; ChangedAt: Date;
+      }> = [];
+
+      for (const [param, newValue] of eavParams) {
+        const oldValue = currentValues[param] ?? null;
+        if (oldValue !== newValue) {
+          historyRows.push({
+            MerchantId: merchantId,
+            ProductId: config.productId,
+            ExperimentDatetimeSubmitted: dt,
+            Parameter: param,
+            OldValue: oldValue,
+            NewValue: newValue,
+            ChangedAt: now,
+          });
+        }
+      }
+
+      if (historyRows.length > 0) {
+        await tx.experimentConfigHistory.createMany({ data: historyRows });
       }
     });
   }
@@ -654,6 +697,9 @@ async function handleActivate(
       if (config.priorStrength != null) {
         eavParams.push(["PriorStrength", config.priorStrength]);
       }
+      if (config.priceEndings.length > 0) {
+        eavParams.push(["PriceEndings", config.priceEndings.join(",")]);
+      }
 
       await tx.experimentMerchantInputs.createMany({
         data: eavParams.map(([param, value]) => ({
@@ -663,6 +709,29 @@ async function handleActivate(
           VariantId: canonicalVariantId,
           ExperimentParameter: param,
           ExperimentParameterValue: value,
+        })),
+      });
+
+      // Write initial audit history rows (OldValue = null = first activation)
+      const auditParams: Array<{ param: string; value: string }> = [
+        { param: "CostOfProduction", value: config.costOfProduction != null ? config.costOfProduction.toFixed(2) : "0.00" },
+        { param: "PriceEndings", value: config.priceEndings.join(",") },
+      ];
+      if (config.priorRate != null) {
+        auditParams.push({ param: "PriorRate", value: config.priorRate.toFixed(4) });
+      }
+      if (config.priorStrength != null) {
+        auditParams.push({ param: "PriorStrength", value: config.priorStrength });
+      }
+      await tx.experimentConfigHistory.createMany({
+        data: auditParams.map(({ param, value }) => ({
+          MerchantId: merchantId,
+          ProductId: config.productId,
+          ExperimentDatetimeSubmitted: experimentDatetime,
+          Parameter: param,
+          OldValue: null,
+          NewValue: value,
+          ChangedAt: experimentDatetime,
         })),
       });
 

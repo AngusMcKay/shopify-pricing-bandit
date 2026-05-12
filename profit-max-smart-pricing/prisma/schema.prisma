@@ -272,6 +272,28 @@ model Notifications {
 }
 
 // ---------------------------------------------------------------------------
+// ExperimentConfigHistory
+// Append-only audit log of mutable experiment settings.
+// Written once on initial activation (OldValue = null) and once per
+// config-only update.  Covers CostOfProduction, PriorRate, PriorStrength,
+// and PriceEndings (comma-separated list of two-digit cent values).
+// No FK on MerchantId — history is write-once and survives merchant deletion.
+// ---------------------------------------------------------------------------
+model ExperimentConfigHistory {
+  Id                          Int      @id @default(autoincrement())
+  MerchantId                  String
+  ProductId                   String
+  ExperimentDatetimeSubmitted DateTime
+  Parameter                   String   // CostOfProduction | PriorRate | PriorStrength | PriceEndings
+  OldValue                    String?  // null on initial activation
+  NewValue                    String
+  ChangedAt                   DateTime
+
+  @@index([MerchantId])
+  @@index([ProductId, ExperimentDatetimeSubmitted])
+}
+
+// ---------------------------------------------------------------------------
 // BanditParametersHistory
 // Append-only audit log of BanditParameters updates
 // No FK on MerchantId — history is write-once and survives merchant deletion

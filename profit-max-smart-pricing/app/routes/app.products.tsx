@@ -608,7 +608,7 @@ export default function ProductsPage() {
     const uiCost = ui.costOfProduction !== "" ? parseFloat(ui.costOfProduction) : undefined;
     if (uiCost !== server.costOfProduction) return true;
 
-    const uiPriorRate = ui.priorRate !== "" ? parseFloat(ui.priorRate) / 100 : undefined;
+    const uiPriorRate = ui.priorRate !== "" ? parseFloat(ui.priorRate) : undefined;
     const serverPriorRate = server.priorRate ?? undefined;
     if (uiPriorRate !== serverPriorRate) return true;
 
@@ -1324,7 +1324,7 @@ export default function ProductsPage() {
           {restartProducts.length > 0 && (
             <>
               <s-paragraph>
-                New price tests will be started for the following products:
+                New price tests will be started for the following products (either because they are new items being added, or the product price settings have been changed meaning new price points will be tested):
               </s-paragraph>
               <s-unordered-list>
                 {restartProducts.map((p) => (
