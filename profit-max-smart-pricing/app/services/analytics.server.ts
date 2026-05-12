@@ -12,7 +12,11 @@ import type {
   KpiTimeSeriesData,
   ProductPriceKpiData,
   TrafficAllocationData,
+  DailyPriceImpressionsData,
   Metric,
+  ScenarioValues,
+  ProductImpactEntry,
+  PriceImpactData,
 } from "./stub-data";
 
 const TIME_PERIODS = [
@@ -43,6 +47,8 @@ function emptyData(): AnalyticsData {
     productOptions: [],
     productPriceKpi: {},
     trafficAllocation: {},
+    dailyPriceImpressions: {},
+    priceImpact: null,
   };
 }
 
@@ -70,7 +76,7 @@ export async function fetchAnalyticsData(
   );
 
   // ---- Parallel DB reads ----
-  const [setups, allSetups, snapshots, impressions, purchases, banditHistory] =
+  const [setups, allSetups, snapshots, impressions, purchases, banditHistory, costInputs] =
     await Promise.all([
       // Current active setup rows (current probabilities)
       db.experimentSetup.findMany({
@@ -146,9 +152,23 @@ export async function fetchAnalyticsData(
         distinct: ["ProductId", "ModelVersion"],
         orderBy: { ModelVersion: "asc" },
       }),
+      // Cost of production per product (EAV)
+      db.experimentMerchantInputs.findMany({
+        where: {
+          MerchantId: merchantId,
+          ProductId: { in: productIds },
+          ExperimentDatetimeSubmitted: { in: experimentDatetimes },
+          ExperimentParameter: "CostOfProduction",
+        },
+        select: { ProductId: true, ExperimentParameterValue: true },
+        distinct: ["ProductId"],
+      }),
     ]);
 
   const titleByProduct = new Map(snapshots.map((s) => [s.ProductId, s.ProductTitle]));
+  const costByProduct = new Map(
+    costInputs.map((c) => [c.ProductId, parseFloat(c.ExperimentParameterValue)]),
+  );
 
   // ---- aggregateKpi ----
   // One bar group per product: total impressions, overall conversion rate, total revenue.
@@ -247,15 +267,30 @@ export async function fetchAnalyticsData(
   }));
 
   const priceKpiMetrics: Metric[] = [
-    { id: "impressions", label: "Impressions", unit: "number" },
-    { id: "purchases", label: "Purchases", unit: "number" },
-    { id: "conversion_rate", label: "Conv. Rate (%)", unit: "percentage" },
-    { id: "revenue", label: "Revenue", unit: "currency" },
-    { id: "probability", label: "Current allocation", unit: "percentage" },
+    { id: "profit_per_impression", label: "Profit Per Impression", unit: "currency" },
+    { id: "revenue_per_impression", label: "Revenue Per Impression", unit: "currency" },
+    { id: "conversion_rate", label: "Conversion Rate", unit: "percentage" },
+    { id: "impressions", label: "Total Impressions", unit: "number" },
+    { id: "profit", label: "Total Profit", unit: "currency" },
+    { id: "purchases", label: "Total Purchases", unit: "number" },
+    { id: "revenue", label: "Total Revenue", unit: "currency" },
   ];
+
+  // Pre-build map: productId → date → priceStr → impression count
+  const impsByProductDatePrice = new Map<string, Map<string, Map<string, number>>>();
+  for (const imp of impressions) {
+    const byDate = impsByProductDatePrice.get(imp.ProductId) ?? new Map<string, Map<string, number>>();
+    impsByProductDatePrice.set(imp.ProductId, byDate);
+    const day = isoDate(imp.Datetime);
+    const byPrice = byDate.get(day) ?? new Map<string, number>();
+    byDate.set(day, byPrice);
+    const k = imp.Price.toString();
+    byPrice.set(k, (byPrice.get(k) ?? 0) + 1);
+  }
 
   const productPriceKpi: Record<string, ProductPriceKpiData> = {};
   const trafficAllocation: Record<string, TrafficAllocationData> = {};
+  const dailyPriceImpressions: Record<string, DailyPriceImpressionsData> = {};
 
   for (const pid of productIds) {
     const productSetups = setups.filter((s) => s.ProductId === pid);
@@ -289,17 +324,23 @@ export async function fetchAnalyticsData(
       pursByPrice.set(priceStr, (pursByPrice.get(priceStr) ?? 0) + 1);
     }
 
+    const productCost = costByProduct.get(pid) ?? 0;
     const priceKpiData: Record<string, Record<string, number>> = {};
     for (const priceStr of sortedPrices) {
       const imps = impsByPrice.get(priceStr) ?? 0;
       const purs = pursByPrice.get(priceStr) ?? 0;
-      const prob = priceInfo.get(priceStr)?.probability ?? 0;
+      const price = parseFloat(priceStr);
+      const convRate = imps > 0 ? purs / imps : 0;
+      const totalRevenue = parseFloat((purs * price).toFixed(2));
+      const totalProfit = parseFloat((purs * (price - productCost)).toFixed(2));
       priceKpiData[priceStr] = {
         impressions: imps,
         purchases: purs,
-        conversion_rate: imps > 0 ? parseFloat(((purs / imps) * 100).toFixed(2)) : 0,
-        revenue: parseFloat((purs * parseFloat(priceStr)).toFixed(2)),
-        probability: parseFloat((prob * 100).toFixed(1)),
+        conversion_rate: parseFloat((convRate * 100).toFixed(2)),
+        revenue: totalRevenue,
+        profit: totalProfit,
+        revenue_per_impression: imps > 0 ? parseFloat((totalRevenue / imps).toFixed(4)) : 0,
+        profit_per_impression: imps > 0 ? parseFloat((totalProfit / imps).toFixed(4)) : 0,
       };
     }
 
@@ -351,7 +392,103 @@ export async function fetchAnalyticsData(
       dates: trafficDates,
       allocations,
     };
+
+    dailyPriceImpressions[pid] = {
+      dates,
+      pricePoints: sortedPrices.map((p) => parseFloat(p)),
+      currency: "USD",
+      counts: dates.map((date) => {
+        const byDate = impsByProductDatePrice.get(pid);
+        return sortedPrices.map((priceStr) => byDate?.get(date)?.get(priceStr) ?? 0);
+      }),
+    };
   }
+
+  // ---- priceImpact ----
+  // For each product, project "what if all impressions saw the best / worst price?"
+  const impactByProduct: ProductImpactEntry[] = [];
+
+  for (const pid of productIds) {
+    const productSetups = setups.filter((s) => s.ProductId === pid);
+    const cost = costByProduct.get(pid) ?? 0;
+    const hasCostData = costByProduct.has(pid) && cost > 0;
+
+    // Deduplicate prices (same as priceKpi loop above)
+    const seenPrices = new Set<string>();
+    for (const s of productSetups) seenPrices.add(s.Price.toString());
+    const priceStrs = [...seenPrices].sort((a, b) => parseFloat(a) - parseFloat(b));
+
+    // Per-price impression/purchase counts (all time, not period-limited — use all impressions)
+    const impsByPriceAll = new Map<string, number>();
+    const pursByPriceAll = new Map<string, number>();
+    for (const imp of impressions) {
+      if (imp.ProductId !== pid) continue;
+      const k = imp.Price.toString();
+      impsByPriceAll.set(k, (impsByPriceAll.get(k) ?? 0) + 1);
+    }
+    for (const pur of purchases) {
+      if (pur.ProductId !== pid) continue;
+      const k = pur.Price.toString();
+      pursByPriceAll.set(k, (pursByPriceAll.get(k) ?? 0) + 1);
+    }
+
+    // Only include price points that have received at least one impression
+    const activePrices = priceStrs.filter((p) => (impsByPriceAll.get(p) ?? 0) > 0);
+    if (activePrices.length === 0) continue;
+
+    const totalImps = activePrices.reduce((s, p) => s + (impsByPriceAll.get(p) ?? 0), 0);
+
+    interface PriceStat { price: number; convRate: number; revenuePerImp: number; profitPerImp: number; }
+    const stats: PriceStat[] = activePrices.map((priceStr) => {
+      const price = parseFloat(priceStr);
+      const imps = impsByPriceAll.get(priceStr) ?? 0;
+      const purs = pursByPriceAll.get(priceStr) ?? 0;
+      const convRate = purs / imps;
+      return { price, convRate, revenuePerImp: convRate * price, profitPerImp: convRate * (price - cost) };
+    });
+
+    const toScenario = (stat: PriceStat): ScenarioValues => ({
+      revenue: Math.round(stat.convRate * stat.price * totalImps * 100) / 100,
+      cost: Math.round(stat.convRate * cost * totalImps * 100) / 100,
+      profit: Math.round(stat.convRate * (stat.price - cost) * totalImps * 100) / 100,
+    });
+
+    const byRevenue = [...stats].sort((a, b) => b.revenuePerImp - a.revenuePerImp);
+    const byProfit = [...stats].sort((a, b) => b.profitPerImp - a.profitPerImp);
+
+    impactByProduct.push({
+      productId: pid,
+      productTitle: titleByProduct.get(pid) ?? pid,
+      hasCostData,
+      revenueBest: toScenario(byRevenue[0]),
+      revenueWorst: toScenario(byRevenue[byRevenue.length - 1]),
+      profitBest: toScenario(byProfit[0]),
+      profitWorst: toScenario(byProfit[byProfit.length - 1]),
+    });
+  }
+
+  const sumScenarios = (key: keyof Omit<ProductImpactEntry, "productId" | "productTitle" | "hasCostData">): ScenarioValues =>
+    impactByProduct.reduce(
+      (acc, e) => ({
+        revenue: acc.revenue + (e[key] as ScenarioValues).revenue,
+        cost: acc.cost + (e[key] as ScenarioValues).cost,
+        profit: acc.profit + (e[key] as ScenarioValues).profit,
+      }),
+      { revenue: 0, cost: 0, profit: 0 },
+    );
+
+  const priceImpact: PriceImpactData | null = impactByProduct.length > 0
+    ? {
+        hasCostData: impactByProduct.some((e) => e.hasCostData),
+        aggregate: {
+          revenueBest: sumScenarios("revenueBest"),
+          revenueWorst: sumScenarios("revenueWorst"),
+          profitBest: sumScenarios("profitBest"),
+          profitWorst: sumScenarios("profitWorst"),
+        },
+        byProduct: impactByProduct,
+      }
+    : null;
 
   return {
     aggregateKpi,
@@ -359,5 +496,7 @@ export async function fetchAnalyticsData(
     productOptions,
     productPriceKpi,
     trafficAllocation,
+    dailyPriceImpressions,
+    priceImpact,
   };
 }

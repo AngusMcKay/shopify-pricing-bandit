@@ -75,6 +75,45 @@ export interface TrafficAllocationData {
   allocations: number[][];
 }
 
+export interface DailyPriceImpressionsData {
+  dates: string[];
+  pricePoints: number[];
+  currency: string;
+  /** counts[dateIndex][pricePointIndex] = impression count */
+  counts: number[][];
+}
+
+/** Revenue, cost, and profit projected at a given price scenario */
+export interface ScenarioValues {
+  revenue: number;
+  cost: number;
+  profit: number;
+}
+
+export interface ProductImpactEntry {
+  productId: string;
+  productTitle: string;
+  hasCostData: boolean;
+  /** Best/worst price selected by revenue-per-impression */
+  revenueBest: ScenarioValues;
+  revenueWorst: ScenarioValues;
+  /** Best/worst price selected by profit-per-impression (cost=0 when hasCostData=false) */
+  profitBest: ScenarioValues;
+  profitWorst: ScenarioValues;
+}
+
+export interface PriceImpactData {
+  /** True if at least one product has a cost of production set */
+  hasCostData: boolean;
+  aggregate: {
+    revenueBest: ScenarioValues;
+    revenueWorst: ScenarioValues;
+    profitBest: ScenarioValues;
+    profitWorst: ScenarioValues;
+  };
+  byProduct: ProductImpactEntry[];
+}
+
 export interface AnalyticsData {
   aggregateKpi: AggregateKpiData;
   /** null means "no time-series available — hide chart" */
@@ -82,6 +121,9 @@ export interface AnalyticsData {
   productOptions: Array<{ id: string; title: string }>;
   productPriceKpi: Record<string, ProductPriceKpiData>;
   trafficAllocation: Record<string, TrafficAllocationData>;
+  dailyPriceImpressions: Record<string, DailyPriceImpressionsData>;
+  /** null when there are no active experiments or insufficient impression data */
+  priceImpact: PriceImpactData | null;
 }
 
 export interface OverviewStats {
@@ -233,9 +275,20 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
   const products = await fetchProducts();
   const productOptions = products.map((p) => ({ id: p.id, title: p.title }));
 
+  const priceKpiMetrics: Metric[] = [
+    { id: "profit_per_impression", label: "Profit Per Impression", unit: "currency" },
+    { id: "revenue_per_impression", label: "Revenue Per Impression", unit: "currency" },
+    { id: "conversion_rate", label: "Conversion Rate", unit: "percentage" },
+    { id: "impressions", label: "Total Impressions", unit: "number" },
+    { id: "profit", label: "Total Profit", unit: "currency" },
+    { id: "purchases", label: "Total Purchases", unit: "number" },
+    { id: "revenue", label: "Total Revenue", unit: "currency" },
+  ];
+
   const buildProductPriceKpi = (
     basePrice: number,
     currency: string,
+    cost = 0,
   ): ProductPriceKpiData => {
     const pricePoints = [
       parseFloat((basePrice * 0.85).toFixed(2)),
@@ -246,13 +299,21 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
     ];
     const data: Record<string, Record<string, number>> = {};
     pricePoints.forEach((price, i) => {
+      const imps = 480 - i * 55;
+      const purs = Math.round(imps * (0.055 - i * 0.007));
+      const totalRevenue = parseFloat((purs * price).toFixed(2));
+      const totalProfit = parseFloat((purs * (price - cost)).toFixed(2));
       data[price.toString()] = {
-        conversion_rate: parseFloat((5.5 - i * 0.7).toFixed(2)),
-        revenue: parseFloat((price * (480 - i * 55)).toFixed(0)),
-        profit: parseFloat((price * (480 - i * 55) * (0.28 + i * 0.04)).toFixed(0)),
+        impressions: imps,
+        purchases: purs,
+        conversion_rate: parseFloat(((purs / imps) * 100).toFixed(2)),
+        revenue: totalRevenue,
+        profit: totalProfit,
+        revenue_per_impression: parseFloat((totalRevenue / imps).toFixed(4)),
+        profit_per_impression: parseFloat((totalProfit / imps).toFixed(4)),
       };
     });
-    return { pricePoints, currency, metrics, data };
+    return { pricePoints, currency, metrics: priceKpiMetrics, data };
   };
 
   // Traffic allocation: starts uniform (20% each), converges toward best price
@@ -280,15 +341,81 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
     return { pricePoints, currency, dates, allocations };
   };
 
+  const buildDailyPriceImpressions = (basePrice: number, currency: string): DailyPriceImpressionsData => {
+    const pricePoints = [
+      parseFloat((basePrice * 0.85).toFixed(2)),
+      parseFloat((basePrice * 0.92).toFixed(2)),
+      parseFloat(basePrice.toFixed(2)),
+      parseFloat((basePrice * 1.08).toFixed(2)),
+      parseFloat((basePrice * 1.15).toFixed(2)),
+    ];
+    const startAlloc = [20, 20, 20, 20, 20];
+    const finalAlloc = [55, 25, 12, 5, 3];
+    const totalDailyImps = 50;
+    const counts = dates.map((_, dayIdx) => {
+      const t = dayIdx / Math.max(dates.length - 1, 1);
+      return pricePoints.map((_, pi) => {
+        const pct = startAlloc[pi] + (finalAlloc[pi] - startAlloc[pi]) * t;
+        return Math.round((pct / 100) * totalDailyImps);
+      });
+    });
+    return { dates, pricePoints, currency, counts };
+  };
+
+  const stubCost: Record<string, number> = { p1: 18.5, p3: 10 };
   const productPriceKpi: Record<string, ProductPriceKpiData> = {};
   const trafficAllocation: Record<string, TrafficAllocationData> = {};
+  const dailyPriceImpressions: Record<string, DailyPriceImpressionsData> = {};
   for (const p of products) {
-    productPriceKpi[p.id] = buildProductPriceKpi(p.currentPrice, p.currency);
-    trafficAllocation[p.id] = buildTrafficAllocation(
-      p.currentPrice,
-      p.currency,
-    );
+    productPriceKpi[p.id] = buildProductPriceKpi(p.currentPrice, p.currency, stubCost[p.id] ?? 0);
+    trafficAllocation[p.id] = buildTrafficAllocation(p.currentPrice, p.currency);
+    dailyPriceImpressions[p.id] = buildDailyPriceImpressions(p.currentPrice, p.currency);
   }
+
+  // Stub price impact data — representative best-vs-worst scenarios
+  const buildScenario = (price: number, convRate: number, cost: number, totalImps: number): ScenarioValues => ({
+    revenue: Math.round(convRate * price * totalImps),
+    cost: Math.round(convRate * cost * totalImps),
+    profit: Math.round(convRate * (price - cost) * totalImps),
+  });
+
+  const impactByProduct: ProductImpactEntry[] = products.map((p) => {
+    const totalImps = 800;
+    const cost = p.id === "p1" ? 18.5 : p.id === "p3" ? 10 : 0;
+    const hasCostData = cost > 0;
+    const bestPrice = p.currentPrice * 1.08;
+    const worstPrice = p.currentPrice * 0.85;
+    return {
+      productId: p.id,
+      productTitle: p.title,
+      hasCostData,
+      revenueBest: buildScenario(bestPrice, 0.042, cost, totalImps),
+      revenueWorst: buildScenario(worstPrice, 0.018, cost, totalImps),
+      profitBest: buildScenario(bestPrice, 0.042, cost, totalImps),
+      profitWorst: buildScenario(worstPrice, 0.018, cost, totalImps),
+    };
+  });
+
+  const sumScenarios = (entries: ProductImpactEntry[], key: "revenueBest" | "revenueWorst" | "profitBest" | "profitWorst"): ScenarioValues =>
+    entries.reduce(
+      (acc, e) => ({
+        revenue: acc.revenue + e[key].revenue,
+        cost: acc.cost + e[key].cost,
+        profit: acc.profit + e[key].profit,
+      }),
+      { revenue: 0, cost: 0, profit: 0 },
+    );
+
+  const priceImpact: PriceImpactData = {
+    hasCostData: impactByProduct.some((e) => e.hasCostData),
+    aggregate: {
+      revenueBest: sumScenarios(impactByProduct, "revenueBest"),
+      revenueWorst: sumScenarios(impactByProduct, "revenueWorst"),
+      profitBest: sumScenarios(impactByProduct, "profitBest"),
+      profitWorst: sumScenarios(impactByProduct, "profitWorst"),
+    },
+    byProduct: impactByProduct,
+  };
 
   return {
     aggregateKpi,
@@ -296,5 +423,7 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
     productOptions,
     productPriceKpi,
     trafficAllocation,
+    dailyPriceImpressions,
+    priceImpact,
   };
 }
