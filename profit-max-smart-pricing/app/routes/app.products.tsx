@@ -579,6 +579,9 @@ export default function ProductsPage() {
     const ui = configs[productId];
     if (!ui) return false;
 
+    // If server-side not active, enabling it is always a change
+    if (!server.enabled) return true;
+
     if (parseFloat(ui.minPrice) !== server.minPrice) return true;
     if (parseFloat(ui.maxPrice) !== server.maxPrice) return true;
 
@@ -592,10 +595,12 @@ export default function ProductsPage() {
     if (JSON.stringify(uiExact) !== JSON.stringify(server.exactPricePoints)) return true;
 
     const uiPriorRate = ui.priorRate !== "" ? parseFloat(ui.priorRate) / 100 : undefined;
-    if (uiPriorRate !== server.priorRate) return true;
+    const serverPriorRate = server.priorRate ?? undefined;
+    if (uiPriorRate !== serverPriorRate) return true;
 
     const uiPriorStrength = ui.priorStrength !== "medium" ? ui.priorStrength : undefined;
-    if (uiPriorStrength !== server.priorStrength) return true;
+    const serverPriorStrength = server.priorStrength === "medium" ? undefined : (server.priorStrength ?? undefined);
+    if (uiPriorStrength !== serverPriorStrength) return true;
 
     return false;
   };
@@ -814,13 +819,6 @@ export default function ProductsPage() {
         </s-banner>
       )}
 
-      {/* Unsaved changes banner */}
-      {hasUnsavedChanges && !activating && (
-        <s-banner tone="warning" heading="You have unsaved changes">
-          Click <s-text type="strong">Save and Apply</s-text> to save and apply your
-          configuration, or your changes will be lost if you navigate away.
-        </s-banner>
-      )}
 
       {/* Loading banner with per-product progress */}
       {activating && (
@@ -1037,7 +1035,7 @@ export default function ProductsPage() {
             onClick={() => openModal(cancelModalRef)}
             disabled={activating}
           >
-            Cancel all experiments
+            Cancel all ongoing price tests
           </s-button>
           <s-button
             variant="primary"
@@ -1150,7 +1148,7 @@ export default function ProductsPage() {
                   type="number"
                   value={config.costOfProduction}
                   disabled={!config.enabled || activating}
-                  placeholder="Default (set above)"
+                  placeholder="Global %"
                   style={tableInputStyle(!config.enabled || activating)}
                   onChange={(e) => {
                     updateConfig(product.id, { costOfProduction: e.target.value });
@@ -1373,7 +1371,7 @@ export default function ProductsPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Cancel confirmation modal                                           */}
       {/* ------------------------------------------------------------------ */}
-      <s-modal id="cancel-modal" heading="Cancel all experiments" ref={cancelModalRef}>
+      <s-modal id="cancel-modal" heading="Cancel all ongoing price tests" ref={cancelModalRef}>
         <s-stack direction="block" gap="base">
           <s-banner tone="warning" heading="This action cannot be undone">
             All active price experiments will be stopped and the experiment
