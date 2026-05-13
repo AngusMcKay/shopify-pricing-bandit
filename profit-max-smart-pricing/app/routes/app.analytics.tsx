@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -6,6 +6,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   LabelList,
   Legend,
   ResponsiveContainer,
@@ -15,7 +16,15 @@ import {
 } from "recharts";
 import { authenticate } from "../shopify.server";
 import { fetchAnalyticsData } from "../services/analytics.server";
-import type { AnalyticsData, Metric } from "../services/stub-data";
+import type {
+  AnalyticsData,
+  CompletedExperiment,
+  HistoryRowStats,
+  Metric,
+  ProductImpactEntry,
+  PriceImpactData,
+  ScenarioValues,
+} from "../services/stub-data";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -39,14 +48,13 @@ const CHART_COLORS = [
   "#DE3618",
 ];
 
-// Best/worst scenario colours
-const BEST_PROFIT_COLOR = "#50B83C";   // green
-const BEST_COST_COLOR = "#2C6B2F";     // dark green (cost is darker than profit)
-const WORST_PROFIT_COLOR = "#F49342";  // orange
-const WORST_COST_COLOR = "#BF5C00";    // dark orange
+const BEST_PROFIT_COLOR = "#50B83C";
+const BEST_COST_COLOR = "#2C6B2F";
+const WORST_PROFIT_COLOR = "#F49342";
+const WORST_COST_COLOR = "#BF5C00";
+const PRICE_POINT_BAR_COLOR = "#47C1BF";
 
-// Single-metric price point bar
-const PRICE_POINT_BAR_COLOR = "#47C1BF"; // teal
+const SHORT_EXPERIMENT_OPACITY = 0.65;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,165 +67,72 @@ function formatValue(value: number, unit: Metric["unit"]): string {
 }
 
 function formatCurrency(value: number): string {
-  return `$${value.toLocaleString()}`;
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** Shorten ISO date "2026-03-28" → "Mar 28" */
+function formatCurrencyPerWeek(value: number): string {
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function shortDate(iso: string): string {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// Show every Nth tick on x-axis to avoid crowding
+function shortDateFull(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
+}
+
 function buildXAxisTicks(dates: string[], maxTicks = 8): string[] {
   const step = Math.ceil(dates.length / maxTicks);
   return dates.filter((_, i) => i % step === 0);
 }
 
-// Truncate long product titles for chart labels
 function shortTitle(title: string, max = 16): string {
   return title.length > max ? title.slice(0, max - 1) + "…" : title;
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// Shared chart components
 // ---------------------------------------------------------------------------
 
-export default function AnalyticsPage() {
-  const { allAnalytics } = useLoaderData<typeof loader>();
+function ImpactCharts({
+  priceImpact,
+  impactMode,
+  toggleButton,
+  heading1 = "Price impact potential (all products)",
+  description1,
+}: {
+  priceImpact: PriceImpactData;
+  impactMode: "revenue" | "profit";
+  toggleButton: (mode: "revenue" | "profit", label: string) => React.ReactNode;
+  heading1?: string;
+  description1?: string;
+}) {
+  const aggImpact = priceImpact.aggregate;
+  const aggregateImpactData = [{
+    label: "All products",
+    best_cost: impactMode === "revenue" ? aggImpact.revenueBest.cost : 0,
+    best_profit: impactMode === "revenue" ? aggImpact.revenueBest.profit : aggImpact.profitBest.profit,
+    worst_cost: impactMode === "revenue" ? aggImpact.revenueWorst.cost : 0,
+    worst_profit: impactMode === "revenue" ? aggImpact.revenueWorst.profit : aggImpact.profitWorst.profit,
+  }];
 
-  const [analytics, setAnalytics] = useState<AnalyticsData>(allAnalytics["7d"]);
-  const [period, setPeriod] = useState("7d");
-  const [impactMode, setImpactMode] = useState<"revenue" | "profit">("revenue");
-  const [selectedProductId, setSelectedProductId] = useState(
-    allAnalytics["7d"].productOptions[0]?.id ?? "",
-  );
-  const [selectedPriceMetric, setSelectedPriceMetric] = useState(
-    allAnalytics["7d"].productPriceKpi[allAnalytics["7d"].productOptions[0]?.id ?? ""]?.metrics[0]?.id ?? "profit_per_impression",
-  );
-  const [allocationMode, setAllocationMode] = useState<"percentage" | "absolute">("percentage");
-
-  const handlePeriodChange = (newPeriod: string) => {
-    setPeriod(newPeriod);
-    setAnalytics(allAnalytics[newPeriod as keyof typeof allAnalytics]);
-  };
-
-  const { aggregateKpi, productOptions, productPriceKpi, dailyPriceImpressions, priceImpact } =
-    analytics;
-
-  // ---------------------------------------------------------------------------
-  // Row 1: Price impact potential chart data
-  // ---------------------------------------------------------------------------
-
-  // Aggregate chart: single group with best_ / worst_ prefixed keys (same shape as per-product)
-  const aggImpact = priceImpact?.aggregate;
-  const aggregateImpactData = aggImpact
-    ? [{
-        label: "All products",
-        best_cost: impactMode === "revenue" ? aggImpact.revenueBest.cost : 0,
-        best_profit: impactMode === "revenue" ? aggImpact.revenueBest.profit : aggImpact.profitBest.profit,
-        worst_cost: impactMode === "revenue" ? aggImpact.revenueWorst.cost : 0,
-        worst_profit: impactMode === "revenue" ? aggImpact.revenueWorst.profit : aggImpact.profitWorst.profit,
-      }]
-    : [];
-
-  // Per-product chart: one group per product, each with best + worst bars
-  const MIN_BAR_WIDTH = 90; // px per product group
-  const productImpactData = (priceImpact?.byProduct ?? []).map((entry) => ({
+  const MIN_BAR_WIDTH = 90;
+  const productImpactData = priceImpact.byProduct.map((entry) => ({
     label: shortTitle(entry.productTitle),
+    isShort: entry.isShortExperiment,
     best_cost: impactMode === "revenue" ? entry.revenueBest.cost : 0,
     best_profit: impactMode === "revenue" ? entry.revenueBest.profit : entry.profitBest.profit,
     worst_cost: impactMode === "revenue" ? entry.revenueWorst.cost : 0,
     worst_profit: impactMode === "revenue" ? entry.revenueWorst.profit : entry.profitWorst.profit,
   }));
-  const productImpactScrollWidth = Math.max(
-    400,
-    productImpactData.length * MIN_BAR_WIDTH,
-  );
   const needsScroll = productImpactData.length > 10;
-
-  // ---------------------------------------------------------------------------
-  // Row 2: Per-product price point + traffic charts
-  // ---------------------------------------------------------------------------
-
-  const selectedPriceKpi = productPriceKpi[selectedProductId];
-  const productBarData = selectedPriceKpi
-    ? selectedPriceKpi.pricePoints.map((price) => ({
-        label: `$${price}`,
-        ...selectedPriceKpi.data[price.toString()],
-      }))
-    : [];
-
-  const selectedDailyImps = dailyPriceImpressions[selectedProductId];
-  const allocationBarData = selectedDailyImps
-    ? selectedDailyImps.dates.map((date, di) => {
-        const counts = selectedDailyImps.pricePoints.map(
-          (_: number, pi: number) => selectedDailyImps.counts[di]?.[pi] ?? 0,
-        );
-        const total = counts.reduce((s: number, v: number) => s + v, 0);
-        const entry: Record<string, number | string> = { date };
-        selectedDailyImps.pricePoints.forEach((price: number, pi: number) => {
-          const val = counts[pi] ?? 0;
-          entry[`price_${price}`] =
-            allocationMode === "percentage" && total > 0
-              ? parseFloat(((val / total) * 100).toFixed(1))
-              : val;
-        });
-        return entry;
-      })
-    : [];
-
-  const allocationXAxisTicks = buildXAxisTicks(selectedDailyImps?.dates ?? []);
-
-  const divider = (
-    <div style={{ borderBottom: "1px solid #e1e3e5", margin: "4px 0 20px" }} />
-  );
-
-  const toggleButton = (mode: "revenue" | "profit", label: string) => (
-    <button
-      onClick={() => setImpactMode(mode)}
-      style={{
-        padding: "6px 14px",
-        borderRadius: "4px",
-        border: "1px solid #c4cdd5",
-        background: impactMode === mode ? "#5C6AC4" : "#fff",
-        color: impactMode === mode ? "#fff" : "#212b36",
-        fontWeight: 600,
-        fontSize: 13,
-        cursor: "pointer",
-      }}
-    >
-      {label}
-    </button>
-  );
+  const productImpactScrollWidth = Math.max(400, productImpactData.length * MIN_BAR_WIDTH);
 
   return (
-    <s-page heading="Analytics" inlineSize="large">
-      {/* ------------------------------------------------------------------ */}
-      {/* Global control: time period                                         */}
-      {/* ------------------------------------------------------------------ */}
-      <s-section>
-        <s-select
-          label="Time period"
-          value={period}
-          onChange={(e: Event) =>
-            handlePeriodChange((e.target as HTMLSelectElement).value)
-          }
-        >
-          {aggregateKpi.timePeriods.map((tp) => (
-            <s-option key={tp.value} value={tp.value}>
-              {tp.label}
-            </s-option>
-          ))}
-        </s-select>
-      </s-section>
-
-      {divider}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Row 1: Price impact potential charts                                */}
-      {/* ------------------------------------------------------------------ */}
-      {/* Section header + toggle */}
+    <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
         <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#212b36" }}>
           Overall Price Effects
@@ -228,246 +143,186 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {priceImpact ? (
-        <>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "16px",
-              marginBottom: "16px",
-            }}
-          >
-            {/* Row 1, Chart 1: Aggregate best vs worst */}
-            <s-section heading="Price impact potential (all products)">
-              <s-paragraph>
-                Projected{" "}
-                {impactMode === "revenue" ? "revenue and costs" : "profit"} if the best or
-                worst price point for each product had served all visitors this period.
-              </s-paragraph>
-              <div style={{ width: "100%", height: 300, marginTop: "8px" }}>
-                <ResponsiveContainer>
-                  <BarChart
-                    data={aggregateImpactData}
-                    margin={{ top: 16, right: 24, left: 16, bottom: 8 }}
-                    barCategoryGap="30%"
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 13, fontWeight: 600 }} />
-                    <YAxis
-                      tickFormatter={formatCurrency}
-                      tick={{ fontSize: 11 }}
-                      width={72}
-                    />
-                    <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                    <Legend />
-                    {impactMode === "revenue" ? (
-                      <>
-                        <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR} />
-                        <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                        <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR} />
-                        <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                      </>
-                    ) : (
-                      <>
-                        <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                          <LabelList
-                            dataKey="best_profit"
-                            position="top"
-                            style={{ fontSize: 11, fontWeight: 600 }}
-                            formatter={(v: unknown) => formatCurrency(v as number)}
-                          />
-                        </Bar>
-                        <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                          <LabelList
-                            dataKey="worst_profit"
-                            position="top"
-                            style={{ fontSize: 11, fontWeight: 600 }}
-                            formatter={(v: unknown) => formatCurrency(v as number)}
-                          />
-                        </Bar>
-                      </>
-                    )}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </s-section>
-
-            {/* Row 1, Chart 2: Per-product best vs worst */}
-            <s-section heading="Price impact potential by product">
-              <s-paragraph>
-                Same projection broken down by product.{" "}
-                {needsScroll ? "Scroll horizontally to see all products." : ""}
-              </s-paragraph>
-              <div
-                style={{
-                  overflowX: needsScroll ? "auto" : "visible",
-                  marginTop: "8px",
-                }}
-              >
-                <div style={{ width: needsScroll ? productImpactScrollWidth : "100%", height: 300 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={productImpactData}
-                      margin={{ top: 16, right: 16, left: 16, bottom: 8 }}
-                      barCategoryGap="25%"
-                      barGap={2}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                      <YAxis
-                        tickFormatter={formatCurrency}
-                        tick={{ fontSize: 11 }}
-                        width={72}
-                      />
-                      <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                      <Legend />
-                      {impactMode === "revenue" ? (
-                        <>
-                          <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR} />
-                          <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                          <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR} />
-                          <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                        </>
-                      ) : (
-                        <>
-                          <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                          <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                        </>
-                      )}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </s-section>
-          </div>
-        </>
-      ) : (
-        <s-section>
-          <s-paragraph>
-            No active experiments with impression data yet. Price impact
-            projections will appear once visitors have been served experiment
-            prices.
-          </s-paragraph>
-        </s-section>
+      {priceImpact.hasShortExperiment && (
+        <div style={{ marginBottom: "12px", padding: "8px 12px", background: "#fdf6e3", border: "1px solid #f4d87c", borderRadius: "4px", fontSize: 13, color: "#7d5a00" }}>
+          * One or more products have fewer than 7 days of data — their bars are shown muted and weekly projections may not be reliable.
+        </div>
       )}
 
-      {divider}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "16px" }}>
+        {/* Chart 1: Aggregate */}
+        <s-section heading={heading1}>
+          <s-paragraph>
+            {description1 ?? (
+              <>
+                Projected {impactMode === "revenue" ? "revenue and costs" : "profit"} over the selected period
+                if the best or worst price point for each product had served all visitors,
+                based on each product&apos;s actual experiment data.
+              </>
+            )}
+          </s-paragraph>
+          <div style={{ width: "100%", height: 300, marginTop: "8px" }}>
+            <ResponsiveContainer>
+              <BarChart data={aggregateImpactData} margin={{ top: 16, right: 24, left: 16, bottom: 8 }} barCategoryGap="30%">
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 13, fontWeight: 600 }} />
+                <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 11 }} width={72} />
+                <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
+                <Legend />
+                {impactMode === "revenue" ? (
+                  <>
+                    <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR} />
+                    <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR} />
+                    <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
+                  </>
+                ) : (
+                  <>
+                    <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                      <LabelList dataKey="best_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
+                    </Bar>
+                    <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                      <LabelList dataKey="worst_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
+                    </Bar>
+                  </>
+                )}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </s-section>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Row 2: Per-product charts                                           */}
-      {/* ------------------------------------------------------------------ */}
-      {/* Section header + product selector */}
+        {/* Chart 2: Per-product */}
+        <s-section heading="Price impact potential by product">
+          <s-paragraph>
+            Same projection broken down by product.{needsScroll ? " Scroll horizontally to see all products." : ""}
+          </s-paragraph>
+          <div style={{ overflowX: needsScroll ? "auto" : "visible", marginTop: "8px" }}>
+            <div style={{ width: needsScroll ? productImpactScrollWidth : "100%", height: 300 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={productImpactData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }} barCategoryGap="25%" barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 11 }} width={72} />
+                  <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
+                  <Legend />
+                  {impactMode === "revenue" ? (
+                    <>
+                      <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                      <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                      <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                      <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                    </>
+                  ) : (
+                    <>
+                      <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                      <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                      </Bar>
+                    </>
+                  )}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </s-section>
+      </div>
+    </>
+  );
+}
+
+function PerProductCharts({
+  productOptions,
+  selectedProductId,
+  setSelectedProductId,
+  selectedPriceKpi,
+  productBarData,
+  selectedDailyImps,
+  allocationBarData,
+  allocationXAxisTicks,
+  selectedPriceMetric,
+  setSelectedPriceMetric,
+  allocationMode,
+  setAllocationMode,
+}: {
+  productOptions: Array<{ id: string; title: string }>;
+  selectedProductId: string;
+  setSelectedProductId: (id: string) => void;
+  selectedPriceKpi: ReturnType<typeof Object.values<AnalyticsData["productPriceKpi"][string]>> | undefined;
+  productBarData: Array<Record<string, unknown>>;
+  selectedDailyImps: AnalyticsData["dailyPriceImpressions"][string] | undefined;
+  allocationBarData: Array<Record<string, unknown>>;
+  allocationXAxisTicks: string[];
+  selectedPriceMetric: string;
+  setSelectedPriceMetric: (id: string) => void;
+  allocationMode: "percentage" | "absolute";
+  setAllocationMode: (m: "percentage" | "absolute") => void;
+}) {
+  const activeMetric = (selectedPriceKpi as AnalyticsData["productPriceKpi"][string] | undefined)?.metrics.find((m) => m.id === selectedPriceMetric)
+    ?? (selectedPriceKpi as AnalyticsData["productPriceKpi"][string] | undefined)?.metrics[0];
+  const typedPriceKpi = selectedPriceKpi as AnalyticsData["productPriceKpi"][string] | undefined;
+  const typedDailyImps = selectedDailyImps as AnalyticsData["dailyPriceImpressions"][string] | undefined;
+
+  return (
+    <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "16px" }}>
         <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#212b36", whiteSpace: "nowrap" }}>
           Per Product Stats
         </h2>
         <div style={{ width: "660px", flexShrink: 0 }}>
-          <s-select
-            label=""
-            value={selectedProductId}
-            onChange={(e: Event) =>
-              setSelectedProductId((e.target as HTMLSelectElement).value)
-            }
-          >
+          <s-select label="" value={selectedProductId} onChange={(e: Event) => setSelectedProductId((e.target as HTMLSelectElement).value)}>
             {productOptions.map((p) => (
-              <s-option key={p.id} value={p.id}>
-                {p.title}
-              </s-option>
+              <s-option key={p.id} value={p.id}>{p.title}</s-option>
             ))}
           </s-select>
         </div>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "16px",
-        }}
-      >
-        {/* Row 2, Chart 1: Per-product price point — single metric */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <s-section heading="Performance by price point">
-          {(() => {
-            const activeMetric = selectedPriceKpi?.metrics.find((m) => m.id === selectedPriceMetric)
-              ?? selectedPriceKpi?.metrics[0];
-            return (
-              <>
-                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
-                  <select
-                    value={selectedPriceMetric}
-                    onChange={(e) => setSelectedPriceMetric(e.target.value)}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: 13,
-                      borderRadius: "4px",
-                      border: "1px solid #c4cdd5",
-                      background: "#fff",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {(selectedPriceKpi?.metrics ?? []).map((m) => (
-                      <option key={m.id} value={m.id}>{m.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ width: "100%", height: 300 }}>
-                  <ResponsiveContainer>
-                    <BarChart
-                      data={productBarData}
-                      margin={{ top: 16, right: 16, left: 16, bottom: 8 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                      <YAxis
-                        tick={{ fontSize: 11 }}
-                        width={64}
-                        tickFormatter={(v) => activeMetric ? formatValue(Number(v), activeMetric.unit) : v}
-                      />
-                      <Tooltip
-                        formatter={(value) => [
-                          activeMetric ? formatValue(Number(value), activeMetric.unit) : value,
-                          activeMetric?.label ?? selectedPriceMetric,
-                        ]}
-                      />
-                      {activeMetric && (
-                        <Bar
-                          dataKey={activeMetric.id}
-                          name={activeMetric.label}
-                          fill={PRICE_POINT_BAR_COLOR}
-                          radius={[3, 3, 0, 0]}
-                        >
-                          <LabelList
-                            dataKey={activeMetric.id}
-                            position="top"
-                            style={{ fontSize: 11, fontWeight: 600 }}
-                            formatter={(v: unknown) => formatValue(v as number, activeMetric.unit)}
-                          />
-                        </Bar>
-                      )}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </>
-            );
-          })()}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
+            <select
+              value={selectedPriceMetric}
+              onChange={(e) => setSelectedPriceMetric(e.target.value)}
+              style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
+            >
+              {(typedPriceKpi?.metrics ?? []).map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ width: "100%", height: 300 }}>
+            <ResponsiveContainer>
+              <BarChart data={productBarData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 11 }} width={64} tickFormatter={(v) => activeMetric ? formatValue(Number(v), activeMetric.unit) : v} />
+                <Tooltip formatter={(value) => [activeMetric ? formatValue(Number(value), activeMetric.unit) : value, activeMetric?.label ?? selectedPriceMetric]} />
+                {activeMetric && (
+                  <Bar dataKey={activeMetric.id} name={activeMetric.label} fill={PRICE_POINT_BAR_COLOR} radius={[3, 3, 0, 0]}>
+                    <LabelList dataKey={activeMetric.id} position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatValue(v as number, activeMetric.unit)} />
+                  </Bar>
+                )}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </s-section>
 
-        {/* Row 2, Chart 2: Daily impressions by price — stacked bar */}
         <s-section heading="Daily impressions by price">
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
             <select
               value={allocationMode}
               onChange={(e) => setAllocationMode(e.target.value as "percentage" | "absolute")}
-              style={{
-                padding: "4px 8px",
-                fontSize: 13,
-                borderRadius: "4px",
-                border: "1px solid #c4cdd5",
-                background: "#fff",
-                cursor: "pointer",
-              }}
+              style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
             >
               <option value="percentage">% of daily impressions</option>
               <option value="absolute">Daily impressions</option>
@@ -475,18 +330,9 @@ export default function AnalyticsPage() {
           </div>
           <div style={{ width: "100%", height: 280 }}>
             <ResponsiveContainer>
-              <BarChart
-                data={allocationBarData}
-                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
-                barCategoryGap="10%"
-              >
+              <BarChart data={allocationBarData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }} barCategoryGap="10%">
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  ticks={allocationXAxisTicks}
-                  tickFormatter={shortDate}
-                  tick={{ fontSize: 11 }}
-                />
+                <XAxis dataKey="date" ticks={allocationXAxisTicks} tickFormatter={shortDate} tick={{ fontSize: 11 }} />
                 <YAxis
                   tickFormatter={(v) => allocationMode === "percentage" ? `${v}%` : String(v)}
                   domain={allocationMode === "percentage" ? [0, 100] : ["auto", "auto"]}
@@ -497,16 +343,14 @@ export default function AnalyticsPage() {
                 <Tooltip
                   labelFormatter={(label: unknown) => shortDate(String(label))}
                   formatter={(value, name) => [
-                    allocationMode === "percentage"
-                      ? `${Number(value).toFixed(1)}%`
-                      : String(value),
+                    allocationMode === "percentage" ? `${Number(value).toFixed(1)}%` : String(value),
                     String(name).replace("price_", "$"),
                   ]}
                 />
                 <Legend
                   content={() => (
                     <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "12px", fontSize: 12, paddingTop: 4 }}>
-                      {[...(selectedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price, idx) => (
+                      {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price, idx) => (
                         <span key={price} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                           <span style={{ width: 10, height: 10, borderRadius: 2, background: CHART_COLORS[idx % CHART_COLORS.length], flexShrink: 0 }} />
                           ${price}
@@ -515,20 +359,500 @@ export default function AnalyticsPage() {
                     </div>
                   )}
                 />
-                {[...(selectedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number, idx: number) => (
-                  <Bar
-                    key={price}
-                    dataKey={`price_${price}`}
-                    name={`price_${price}`}
-                    stackId="stack"
-                    fill={CHART_COLORS[idx % CHART_COLORS.length]}
-                  />
+                {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number, idx: number) => (
+                  <Bar key={price} dataKey={`price_${price}`} name={`price_${price}`} stackId="stack" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
           </div>
         </s-section>
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History table row
+// ---------------------------------------------------------------------------
+
+function HistoryTableRow({
+  row,
+  isSelected,
+  onSelect,
+  onRemove,
+}: {
+  row: HistoryRowStats;
+  isSelected: boolean;
+  onSelect: () => void;
+  onRemove: () => void;
+}) {
+  const pctDiff = row.profitPerImpressionPctDiff;
+  const pctLabel = pctDiff !== null ? `+${pctDiff}%` : "—";
+
+  return (
+    <tr
+      onClick={onSelect}
+      style={{
+        cursor: "pointer",
+        background: isSelected ? "#f4f6ff" : undefined,
+        borderLeft: isSelected ? "3px solid #5C6AC4" : "3px solid transparent",
+      }}
+    >
+      <td style={tdStyle}>
+        {row.productTitle}
+        {row.isShortExperiment && <span title="Fewer than 7 days of data — weekly projection may not be reliable" style={{ color: "#bf5c00", marginLeft: 4, fontWeight: 700 }}>*</span>}
+      </td>
+      <td style={tdStyle}>
+        <span style={{
+          display: "inline-block", padding: "2px 8px", borderRadius: "12px", fontSize: 12, fontWeight: 600,
+          background: row.status === "Active" ? "#e3f1df" : row.status === "Paused" ? "#fdf6e3" : "#faf0f0",
+          color: row.status === "Active" ? "#108043" : row.status === "Paused" ? "#7d5a00" : "#bf5c00",
+        }}>
+          {row.status}
+        </span>
+      </td>
+      <td style={tdStyle}>{shortDateFull(row.experimentDatetimeSubmitted)}</td>
+      <td style={tdStyle}>{row.endedAt ? shortDateFull(row.endedAt) : "—"}</td>
+      <td style={tdStyle}>{row.daysRunning}d</td>
+      <td style={tdStyle}>{formatCurrency(row.basePrice)}</td>
+      <td style={tdStyle}>{formatCurrency(row.minPrice)} – {formatCurrency(row.maxPrice)}</td>
+      <td style={tdStyle}>{row.totalImpressions.toLocaleString()}</td>
+      <td style={tdStyle}>{row.bestProfitPrice !== null ? `$${row.bestProfitPrice}${row.bestProfitPerImpression !== null ? ` ($${row.bestProfitPerImpression.toFixed(2)})` : ""}` : "—"}</td>
+      <td style={tdStyle}>{row.worstProfitPrice !== null ? `$${row.worstProfitPrice}${row.worstProfitPerImpression !== null ? ` ($${row.worstProfitPerImpression.toFixed(2)})` : ""}` : "—"}</td>
+      <td style={{ ...tdStyle, color: pctDiff !== null && pctDiff > 0 ? "#108043" : "#212b36", fontWeight: 600 }}>{pctLabel}</td>
+      <td style={tdStyle}>
+        <button
+          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#637381", fontSize: 16, lineHeight: 1, padding: "2px 6px" }}
+          title="Remove"
+        >
+          ×
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+const tdStyle: React.CSSProperties = { padding: "10px 12px", fontSize: 13, borderBottom: "1px solid #e1e3e5", verticalAlign: "middle" };
+const thStyle: React.CSSProperties = { padding: "8px 12px", fontSize: 12, fontWeight: 600, color: "#637381", borderBottom: "2px solid #e1e3e5", textAlign: "left", whiteSpace: "nowrap" };
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export default function AnalyticsPage() {
+  const { allAnalytics } = useLoaderData<typeof loader>();
+
+  // -- Ongoing state --
+  const [analytics, setAnalytics] = useState<AnalyticsData>(allAnalytics["7d"]);
+  const [period, setPeriod] = useState("7d");
+  const [impactMode, setImpactMode] = useState<"revenue" | "profit">("revenue");
+  const [selectedProductId, setSelectedProductId] = useState(allAnalytics["7d"].productOptions[0]?.id ?? "");
+  const [selectedPriceMetric, setSelectedPriceMetric] = useState(
+    allAnalytics["7d"].productPriceKpi[allAnalytics["7d"].productOptions[0]?.id ?? ""]?.metrics[0]?.id ?? "profit_per_impression",
+  );
+  const [allocationMode, setAllocationMode] = useState<"percentage" | "absolute">("percentage");
+
+  // -- View toggle --
+  const [view, setView] = useState<"ongoing" | "past">("ongoing");
+
+  // -- History state --
+  const [completedExperiments, setCompletedExperiments] = useState<CompletedExperiment[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRows, setHistoryRows] = useState<HistoryRowStats[]>([]);
+  const [historyRowsLoading, setHistoryRowsLoading] = useState<Set<string>>(new Set());
+  const [selectedHistoryKey, setSelectedHistoryKey] = useState<string | null>(null);
+  const [ongoingTableCollapsed, setOngoingTableCollapsed] = useState(false);
+  const [historyTableCollapsed, setHistoryTableCollapsed] = useState(false);
+  const [addProductValue, setAddProductValue] = useState("");
+
+  // Impact mode shared between views
+  const [historyImpactMode, setHistoryImpactMode] = useState<"revenue" | "profit">("revenue");
+
+  const handlePeriodChange = (newPeriod: string) => {
+    setPeriod(newPeriod);
+    setAnalytics(allAnalytics[newPeriod as keyof typeof allAnalytics]);
+  };
+
+  const { aggregateKpi, productOptions, productPriceKpi, dailyPriceImpressions, priceImpact } = analytics;
+
+  // -- Ongoing chart data --
+  const selectedPriceKpi = productPriceKpi[selectedProductId];
+  const productBarData = selectedPriceKpi
+    ? selectedPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, ...selectedPriceKpi.data[price.toString()] }))
+    : [];
+
+  const selectedDailyImps = dailyPriceImpressions[selectedProductId];
+  const allocationBarData = selectedDailyImps
+    ? selectedDailyImps.dates.map((date, di) => {
+        const counts = selectedDailyImps.pricePoints.map((_: number, pi: number) => selectedDailyImps.counts[di]?.[pi] ?? 0);
+        const total = counts.reduce((s: number, v: number) => s + v, 0);
+        const entry: Record<string, number | string> = { date };
+        selectedDailyImps.pricePoints.forEach((price: number, pi: number) => {
+          const val = counts[pi] ?? 0;
+          entry[`price_${price}`] = allocationMode === "percentage" && total > 0 ? parseFloat(((val / total) * 100).toFixed(1)) : val;
+        });
+        return entry;
+      })
+    : [];
+  const allocationXAxisTicks = buildXAxisTicks(selectedDailyImps?.dates ?? []);
+
+  // -- History: load experiment list when Past tab is first opened --
+  const loadCompletedExperiments = useCallback(async () => {
+    if (completedExperiments !== null) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetch("/api/analytics-history?action=list");
+      const json = await res.json() as { experiments: CompletedExperiment[] };
+      setCompletedExperiments(json.experiments);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [completedExperiments]);
+
+  useEffect(() => {
+    if (view === "past") loadCompletedExperiments();
+  }, [view, loadCompletedExperiments]);
+
+  // -- History: add a product row --
+  const addHistoryRow = useCallback(async (productId: string, experimentDatetime: string) => {
+    const key = `${productId}|${experimentDatetime}`;
+    if (historyRows.some((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` === key)) return;
+    setHistoryRowsLoading((prev) => new Set(prev).add(key));
+    try {
+      const res = await fetch(`/api/analytics-history?action=row&productId=${encodeURIComponent(productId)}&experimentDatetime=${encodeURIComponent(experimentDatetime)}`);
+      const json = await res.json() as { row: HistoryRowStats };
+      setHistoryRows((prev) => [...prev, json.row]);
+      if (!selectedHistoryKey) setSelectedHistoryKey(key);
+    } finally {
+      setHistoryRowsLoading((prev) => { const s = new Set(prev); s.delete(key); return s; });
+    }
+  }, [historyRows, selectedHistoryKey]);
+
+  const removeHistoryRow = (key: string) => {
+    setHistoryRows((prev) => prev.filter((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` !== key));
+    if (selectedHistoryKey === key) {
+      const remaining = historyRows.filter((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` !== key);
+      setSelectedHistoryKey(remaining[0] ? `${remaining[0].productId}|${remaining[0].experimentDatetimeSubmitted}` : null);
+    }
+  };
+
+  // -- History: aggregate priceImpact across all table rows --
+  const historyPriceImpact: PriceImpactData | null = historyRows.length > 0 ? (() => {
+    const entries: ProductImpactEntry[] = historyRows.map((r) => ({
+      productId: r.productId,
+      productTitle: r.productTitle,
+      ...r.priceImpact,
+    }));
+    const sum = (key: keyof Omit<ProductImpactEntry, "productId" | "productTitle" | "hasCostData" | "daysRunning" | "isShortExperiment">): ScenarioValues =>
+      entries.reduce((acc, e) => ({
+        revenue: acc.revenue + (e[key] as ScenarioValues).revenue,
+        cost: acc.cost + (e[key] as ScenarioValues).cost,
+        profit: acc.profit + (e[key] as ScenarioValues).profit,
+      }), { revenue: 0, cost: 0, profit: 0 });
+    return {
+      hasCostData: entries.some((e) => e.hasCostData),
+      hasShortExperiment: entries.some((e) => e.isShortExperiment),
+      aggregate: { revenueBest: sum("revenueBest"), revenueWorst: sum("revenueWorst"), profitBest: sum("profitBest"), profitWorst: sum("profitWorst") },
+      byProduct: entries,
+    };
+  })() : null;
+
+  // -- History: selected row detail --
+  const selectedHistoryRow = historyRows.find((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` === selectedHistoryKey);
+
+  // -- Completed experiments not yet in the table --
+  const addedKeys = new Set(historyRows.map((r) => `${r.productId}|${r.experimentDatetimeSubmitted}`));
+  const availableToAdd = (completedExperiments ?? []).filter((e) => !addedKeys.has(`${e.productId}|${e.experimentDatetimeSubmitted}`));
+
+  // -- Shared UI helpers --
+  const divider = <div style={{ borderBottom: "1px solid #e1e3e5", margin: "4px 0 20px" }} />;
+
+  const makeToggleButton = (currentMode: "revenue" | "profit", setMode: (m: "revenue" | "profit") => void) =>
+    (mode: "revenue" | "profit", label: string) => (
+      <button
+        key={mode}
+        onClick={() => setMode(mode)}
+        style={{
+          padding: "6px 14px", borderRadius: "4px", border: "1px solid #c4cdd5",
+          background: currentMode === mode ? "#5C6AC4" : "#fff",
+          color: currentMode === mode ? "#fff" : "#212b36",
+          fontWeight: 600, fontSize: 13, cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    );
+
+  const viewTabStyle = (active: boolean): React.CSSProperties => ({
+    padding: "8px 20px", borderRadius: "4px", border: "1px solid #c4cdd5",
+    background: active ? "#5C6AC4" : "#fff",
+    color: active ? "#fff" : "#212b36",
+    fontWeight: 600, fontSize: 14, cursor: "pointer",
+  });
+
+  return (
+    <s-page heading="Analytics" inlineSize="large">
+      {/* ------------------------------------------------------------------ */}
+      {/* View toggle + global time period (ongoing only)                     */}
+      {/* ------------------------------------------------------------------ */}
+      <s-section>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button style={viewTabStyle(view === "ongoing")} onClick={() => setView("ongoing")}>Ongoing Experiments</button>
+            <button style={viewTabStyle(view === "past")} onClick={() => setView("past")}>Past Experiments</button>
+          </div>
+          {view === "ongoing" && (
+            <s-select
+              label="Time period"
+              value={period}
+              onChange={(e: Event) => handlePeriodChange((e.target as HTMLSelectElement).value)}
+            >
+              {aggregateKpi.timePeriods.map((tp) => (
+                <s-option key={tp.value} value={tp.value}>{tp.label}</s-option>
+              ))}
+            </s-select>
+          )}
+        </div>
+      </s-section>
+
+      {divider}
+
+      {/* ================================================================== */}
+      {/* ONGOING VIEW                                                        */}
+      {/* ================================================================== */}
+      {view === "ongoing" && (
+        <>
+          {/* Collapsible active experiments summary table */}
+          {priceImpact && priceImpact.byProduct.length > 0 && (
+            <div style={{ marginBottom: "24px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#212b36" }}>
+                  Active experiments ({priceImpact.byProduct.length})
+                </h3>
+                <button
+                  onClick={() => setOngoingTableCollapsed((v) => !v)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#5C6AC4", fontWeight: 600 }}
+                >
+                  {ongoingTableCollapsed ? "Expand ▾" : "Collapse ▴"}
+                </button>
+              </div>
+              {!ongoingTableCollapsed && (
+                <div style={{ overflowX: "auto", borderRadius: "4px", border: "1px solid #e1e3e5" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: "#f9fafb" }}>
+                        <th style={thStyle}>Product</th>
+                        <th style={thStyle}>Started</th>
+                        <th style={thStyle}>Days running</th>
+                        <th style={thStyle}>Price range</th>
+                        <th style={thStyle}>Total impressions</th>
+                        <th style={thStyle}>Best price (profit/imp)</th>
+                        <th style={thStyle}>Worst price (profit/imp)</th>
+                        <th style={thStyle}>Best vs worst</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {priceImpact.byProduct.map((entry) => {
+                        const pctDiff = entry.profitPerImpressionPctDiff;
+                        return (
+                          <tr key={entry.productId} style={{ borderBottom: "1px solid #e1e3e5" }}>
+                            <td style={tdStyle}>
+                              {entry.productTitle}
+                              {entry.isShortExperiment && <span title="Fewer than 7 days — projection may not be reliable" style={{ color: "#bf5c00", marginLeft: 4, fontWeight: 700 }}>*</span>}
+                            </td>
+                            <td style={tdStyle}>{shortDateFull(entry.experimentDatetimeSubmitted)}</td>
+                            <td style={tdStyle}>{entry.daysRunning}d</td>
+                            <td style={tdStyle}>{formatCurrency(entry.minPrice)} – {formatCurrency(entry.maxPrice)}</td>
+                            <td style={tdStyle}>{entry.totalImpressions.toLocaleString()}</td>
+                            <td style={tdStyle}>{entry.bestProfitPrice !== null ? `$${entry.bestProfitPrice}${entry.bestProfitPerImpression !== null ? ` ($${entry.bestProfitPerImpression.toFixed(2)})` : ""}` : "—"}</td>
+                            <td style={tdStyle}>{entry.worstProfitPrice !== null ? `$${entry.worstProfitPrice}${entry.worstProfitPerImpression !== null ? ` ($${entry.worstProfitPerImpression.toFixed(2)})` : ""}` : "—"}</td>
+                            <td style={{ ...tdStyle, color: pctDiff !== null && pctDiff > 0 ? "#108043" : "#212b36", fontWeight: 600 }}>
+                              {pctDiff !== null ? `+${pctDiff}%` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {priceImpact.hasShortExperiment && (
+                    <div style={{ padding: "8px 12px", fontSize: 12, color: "#7d5a00", borderTop: "1px solid #e1e3e5", background: "#fdf6e3" }}>
+                      * Fewer than 7 days of data — weekly projection may not be reliable
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {divider}
+
+          {priceImpact ? (
+            <ImpactCharts
+              priceImpact={priceImpact}
+              impactMode={impactMode}
+              toggleButton={makeToggleButton(impactMode, setImpactMode)}
+            />
+          ) : (
+            <s-section>
+              <s-paragraph>
+                No active experiments with impression data yet. Price impact projections will appear once visitors have been served experiment prices.
+              </s-paragraph>
+            </s-section>
+          )}
+
+          {divider}
+
+          <PerProductCharts
+            productOptions={productOptions}
+            selectedProductId={selectedProductId}
+            setSelectedProductId={setSelectedProductId}
+            selectedPriceKpi={selectedPriceKpi as never}
+            productBarData={productBarData}
+            selectedDailyImps={selectedDailyImps as never}
+            allocationBarData={allocationBarData}
+            allocationXAxisTicks={allocationXAxisTicks}
+            selectedPriceMetric={selectedPriceMetric}
+            setSelectedPriceMetric={setSelectedPriceMetric}
+            allocationMode={allocationMode}
+            setAllocationMode={setAllocationMode}
+          />
+        </>
+      )}
+
+      {/* ================================================================== */}
+      {/* PAST VIEW                                                           */}
+      {/* ================================================================== */}
+      {view === "past" && (
+        <>
+          {/* Add a product selector */}
+          <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ flex: 1, maxWidth: 400 }}>
+              <select
+                value={addProductValue}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) return;
+                  const [productId, datetime] = val.split("|||");
+                  setAddProductValue("");
+                  addHistoryRow(productId, datetime);
+                }}
+                style={{ width: "100%", padding: "8px 10px", fontSize: 14, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
+                disabled={historyLoading || availableToAdd.length === 0}
+              >
+                <option value="">
+                  {historyLoading ? "Loading…" : availableToAdd.length === 0 ? "No experiments found" : "Add a product experiment…"}
+                </option>
+                {availableToAdd.map((e) => (
+                  <option key={`${e.productId}|${e.experimentDatetimeSubmitted}`} value={`${e.productId}|||${e.experimentDatetimeSubmitted}`}>
+                    {e.productTitle} — {e.status === "Active" ? "Active" : `ended ${shortDateFull(e.endedAt!)}`} ({e.daysRunning}d)
+                  </option>
+                ))}
+              </select>
+            </div>
+            {historyRowsLoading.size > 0 && <span style={{ fontSize: 13, color: "#637381" }}>Loading…</span>}
+          </div>
+
+          {/* Summary table */}
+          {historyRows.length > 0 && (
+            <div style={{ marginBottom: "24px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#212b36" }}>
+                  Selected experiments ({historyRows.length})
+                </h3>
+                <button
+                  onClick={() => setHistoryTableCollapsed((v) => !v)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#5C6AC4", fontWeight: 600 }}
+                >
+                  {historyTableCollapsed ? "Expand ▾" : "Collapse ▴"}
+                </button>
+              </div>
+              {!historyTableCollapsed && (
+                <div style={{ overflowX: "auto", borderRadius: "4px", border: "1px solid #e1e3e5" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: "#f9fafb" }}>
+                        <th style={thStyle}>Product</th>
+                        <th style={thStyle}>Status</th>
+                        <th style={thStyle}>Started</th>
+                        <th style={thStyle}>Ended</th>
+                        <th style={thStyle}>Duration</th>
+                        <th style={thStyle}>Base price</th>
+                        <th style={thStyle}>Price range</th>
+                        <th style={thStyle}>Total impressions</th>
+                        <th style={thStyle}>Best price (profit/imp)</th>
+                        <th style={thStyle}>Worst price (profit/imp)</th>
+                        <th style={thStyle}>Best vs worst</th>
+                        <th style={thStyle}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyRows.map((row) => {
+                        const key = `${row.productId}|${row.experimentDatetimeSubmitted}`;
+                        return (
+                          <HistoryTableRow
+                            key={key}
+                            row={row}
+                            isSelected={selectedHistoryKey === key}
+                            onSelect={() => setSelectedHistoryKey(key)}
+                            onRemove={() => removeHistoryRow(key)}
+                          />
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {historyRows.some((r) => r.isShortExperiment) && (
+                    <div style={{ padding: "8px 12px", fontSize: 12, color: "#7d5a00", borderTop: "1px solid #e1e3e5", background: "#fdf6e3" }}>
+                      * Fewer than 7 days of data — weekly projection may not be reliable
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {historyRows.length === 0 && !historyLoading && (
+            <s-section>
+              <s-paragraph>Add a past experiment above to see its performance charts and compare across experiments.</s-paragraph>
+            </s-section>
+          )}
+
+          {/* Overall price effects — aggregate across all table rows */}
+          {historyPriceImpact && (
+            <>
+              {divider}
+              <ImpactCharts
+                priceImpact={historyPriceImpact}
+                impactMode={historyImpactMode}
+                toggleButton={makeToggleButton(historyImpactMode, setHistoryImpactMode)}
+                heading1="Projected weekly price effect (selected experiments)"
+                description1="Projected weekly profit if the best or worst price point for each selected experiment had served all visitors. Values are normalised to a weekly rate to allow comparison across experiments of different lengths."
+              />
+            </>
+          )}
+
+          {/* Per-product detail for selected row */}
+          {selectedHistoryRow && (
+            <>
+              {divider}
+              <PerProductCharts
+                productOptions={historyRows.map((r) => ({ id: `${r.productId}|${r.experimentDatetimeSubmitted}`, title: `${r.productTitle} (${shortDateFull(r.experimentDatetimeSubmitted)})` }))}
+                selectedProductId={`${selectedHistoryRow.productId}|${selectedHistoryRow.experimentDatetimeSubmitted}`}
+                setSelectedProductId={(key) => setSelectedHistoryKey(key)}
+                selectedPriceKpi={undefined}
+                productBarData={[]}
+                selectedDailyImps={undefined}
+                allocationBarData={[]}
+                allocationXAxisTicks={[]}
+                selectedPriceMetric={selectedPriceMetric}
+                setSelectedPriceMetric={setSelectedPriceMetric}
+                allocationMode={allocationMode}
+                setAllocationMode={setAllocationMode}
+              />
+            </>
+          )}
+        </>
+      )}
     </s-page>
   );
 }

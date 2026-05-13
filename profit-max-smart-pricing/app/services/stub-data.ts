@@ -94,10 +94,23 @@ export interface ProductImpactEntry {
   productId: string;
   productTitle: string;
   hasCostData: boolean;
+  /** Actual days the experiment ran within the selected window */
+  daysRunning: number;
+  /** True when daysRunning < 7 — projection less reliable */
+  isShortExperiment: boolean;
+  experimentDatetimeSubmitted: string; // ISO string
+  minPrice: number;
+  maxPrice: number;
+  totalImpressions: number;
+  bestProfitPrice: number | null;
+  worstProfitPrice: number | null;
+  bestProfitPerImpression: number | null;
+  worstProfitPerImpression: number | null;
+  profitPerImpressionPctDiff: number | null;
   /** Best/worst price selected by revenue-per-impression */
   revenueBest: ScenarioValues;
   revenueWorst: ScenarioValues;
-  /** Best/worst price selected by profit-per-impression (cost=0 when hasCostData=false) */
+  /** Best/worst price selected by profit-per-impression, normalised to weekly rate */
   profitBest: ScenarioValues;
   profitWorst: ScenarioValues;
 }
@@ -105,6 +118,8 @@ export interface ProductImpactEntry {
 export interface PriceImpactData {
   /** True if at least one product has a cost of production set */
   hasCostData: boolean;
+  /** True if any product in byProduct has isShortExperiment */
+  hasShortExperiment: boolean;
   aggregate: {
     revenueBest: ScenarioValues;
     revenueWorst: ScenarioValues;
@@ -112,6 +127,43 @@ export interface PriceImpactData {
     profitWorst: ScenarioValues;
   };
   byProduct: ProductImpactEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// History types (past experiments)
+// ---------------------------------------------------------------------------
+
+export interface CompletedExperiment {
+  productId: string;
+  productTitle: string;
+  experimentDatetimeSubmitted: string; // ISO string
+  endedAt: string | null; // null when experiment is still active
+  daysRunning: number;
+  isShortExperiment: boolean;
+  status: string; // "Active" | "Paused" | "Cancelled"
+}
+
+/** Per-row summary stats shown in the history table */
+export interface HistoryRowStats {
+  productId: string;
+  productTitle: string;
+  experimentDatetimeSubmitted: string;
+  endedAt: string | null; // null when experiment is still active
+  status: string; // "Active" | "Paused" | "Cancelled"
+  daysRunning: number;
+  isShortExperiment: boolean;
+  hasCostData: boolean;
+  basePrice: number;
+  minPrice: number;
+  maxPrice: number;
+  totalImpressions: number;
+  bestProfitPrice: number | null;
+  worstProfitPrice: number | null;
+  bestProfitPerImpression: number | null;
+  worstProfitPerImpression: number | null;
+  profitPerImpressionPctDiff: number | null;
+  /** Weekly-rate price impact for this row */
+  priceImpact: Omit<ProductImpactEntry, "productId" | "productTitle">;
 }
 
 export interface AnalyticsData {
@@ -379,20 +431,49 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
     profit: Math.round(convRate * (price - cost) * totalImps),
   });
 
+  // Stub: give each product a plausible daysRunning within the selected period
+  const stubDaysRunning: Record<string, number> = { p1: 30, p2: 5, p3: 14, p4: 30, p5: 8, p6: 30 };
+
   const impactByProduct: ProductImpactEntry[] = products.map((p) => {
+    const daysRunning = stubDaysRunning[p.id] ?? 14;
+    const isShortExperiment = daysRunning < 7;
     const totalImps = 800;
     const cost = p.id === "p1" ? 18.5 : p.id === "p3" ? 10 : 0;
     const hasCostData = cost > 0;
     const bestPrice = p.currentPrice * 1.08;
     const worstPrice = p.currentPrice * 0.85;
+    // Weekly rate: raw value × 7 / daysRunning
+    const weeklyRate = (v: ScenarioValues): ScenarioValues => ({
+      revenue: Math.round(v.revenue * 7 / daysRunning),
+      cost: Math.round(v.cost * 7 / daysRunning),
+      profit: Math.round(v.profit * 7 / daysRunning),
+    });
+    const bestConvRate = 0.042;
+    const worstConvRate = 0.018;
+    const bestProfitPerImp = bestConvRate * (bestPrice - cost);
+    const worstProfitPerImp = worstConvRate * (worstPrice - cost);
+    const pctDiff = worstProfitPerImp !== 0
+      ? Math.round(((bestProfitPerImp - worstProfitPerImp) / Math.abs(worstProfitPerImp)) * 100)
+      : null;
     return {
       productId: p.id,
       productTitle: p.title,
       hasCostData,
-      revenueBest: buildScenario(bestPrice, 0.042, cost, totalImps),
-      revenueWorst: buildScenario(worstPrice, 0.018, cost, totalImps),
-      profitBest: buildScenario(bestPrice, 0.042, cost, totalImps),
-      profitWorst: buildScenario(worstPrice, 0.018, cost, totalImps),
+      daysRunning,
+      isShortExperiment,
+      experimentDatetimeSubmitted: new Date(Date.now() - daysRunning * 86400000).toISOString(),
+      minPrice: worstPrice,
+      maxPrice: bestPrice,
+      totalImpressions: totalImps,
+      bestProfitPrice: parseFloat(bestPrice.toFixed(2)),
+      worstProfitPrice: parseFloat(worstPrice.toFixed(2)),
+      bestProfitPerImpression: parseFloat(bestProfitPerImp.toFixed(4)),
+      worstProfitPerImpression: parseFloat(worstProfitPerImp.toFixed(4)),
+      profitPerImpressionPctDiff: pctDiff,
+      revenueBest: weeklyRate(buildScenario(bestPrice, bestConvRate, cost, totalImps)),
+      revenueWorst: weeklyRate(buildScenario(worstPrice, worstConvRate, cost, totalImps)),
+      profitBest: weeklyRate(buildScenario(bestPrice, bestConvRate, cost, totalImps)),
+      profitWorst: weeklyRate(buildScenario(worstPrice, worstConvRate, cost, totalImps)),
     };
   });
 
@@ -408,6 +489,7 @@ export async function fetchAnalytics(_period: string): Promise<AnalyticsData> {
 
   const priceImpact: PriceImpactData = {
     hasCostData: impactByProduct.some((e) => e.hasCostData),
+    hasShortExperiment: impactByProduct.some((e) => e.isShortExperiment),
     aggregate: {
       revenueBest: sumScenarios(impactByProduct, "revenueBest"),
       revenueWorst: sumScenarios(impactByProduct, "revenueWorst"),

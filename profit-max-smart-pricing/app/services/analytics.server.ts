@@ -217,8 +217,10 @@ export async function fetchAnalyticsData(
   };
 
   // ---- kpiTimeSeries — daily totals across all experiments ----
+  // Build dates from `days` days ago through yesterday — today is excluded because
+  // it is incomplete and would always appear as a blank/partial bar in daily charts.
   const dates: string[] = [];
-  for (let i = days - 1; i >= 0; i--) {
+  for (let i = days; i >= 1; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     dates.push(isoDate(d));
@@ -447,6 +449,13 @@ export async function fetchAnalyticsData(
       return { price, convRate, revenuePerImp: convRate * price, profitPerImp: convRate * (price - cost) };
     });
 
+    // Days the experiment was actually running within the selected period
+    const expStart = experimentStartByProduct.get(pid);
+    const effectiveStart = expStart && expStart > periodStart ? expStart : periodStart;
+    const now = new Date();
+    const daysRunning = Math.max(1, Math.round((now.getTime() - effectiveStart.getTime()) / 86400000));
+    const isShortExperiment = daysRunning < 7;
+
     const toScenario = (stat: PriceStat): ScenarioValues => ({
       revenue: Math.round(stat.convRate * stat.price * totalImps * 100) / 100,
       cost: Math.round(stat.convRate * cost * totalImps * 100) / 100,
@@ -456,10 +465,33 @@ export async function fetchAnalyticsData(
     const byRevenue = [...stats].sort((a, b) => b.revenuePerImp - a.revenuePerImp);
     const byProfit = [...stats].sort((a, b) => b.profitPerImp - a.profitPerImp);
 
+    const setupPrices = setups.filter((s) => s.ProductId === pid).map((s) => parseFloat(s.Price.toString()));
+    const minPrice = setupPrices.length > 0 ? Math.min(...setupPrices) : 0;
+    const maxPrice = setupPrices.length > 0 ? Math.max(...setupPrices) : 0;
+    const bestProfitStat = stats.length > 0 ? stats.reduce((a, b) => b.profitPerImp > a.profitPerImp ? b : a) : null;
+    const worstProfitStat = stats.length > 0 ? stats.reduce((a, b) => b.profitPerImp < a.profitPerImp ? b : a) : null;
+    const bestProfitPerImp = bestProfitStat?.profitPerImp ?? null;
+    const worstProfitPerImp = worstProfitStat?.profitPerImp ?? null;
+    const profitPerImpressionPctDiff =
+      bestProfitPerImp !== null && worstProfitPerImp !== null && worstProfitPerImp !== 0
+        ? Math.round(((bestProfitPerImp - worstProfitPerImp) / Math.abs(worstProfitPerImp)) * 100)
+        : null;
+
     impactByProduct.push({
       productId: pid,
       productTitle: titleByProduct.get(pid) ?? pid,
       hasCostData,
+      daysRunning,
+      isShortExperiment,
+      experimentDatetimeSubmitted: (experimentStartByProduct.get(pid) ?? new Date()).toISOString(),
+      minPrice,
+      maxPrice,
+      totalImpressions: totalImps,
+      bestProfitPrice: bestProfitStat?.price ?? null,
+      worstProfitPrice: worstProfitStat?.price ?? null,
+      bestProfitPerImpression: bestProfitPerImp !== null ? parseFloat(bestProfitPerImp.toFixed(4)) : null,
+      worstProfitPerImpression: worstProfitPerImp !== null ? parseFloat(worstProfitPerImp.toFixed(4)) : null,
+      profitPerImpressionPctDiff,
       revenueBest: toScenario(byRevenue[0]),
       revenueWorst: toScenario(byRevenue[byRevenue.length - 1]),
       profitBest: toScenario(byProfit[0]),
@@ -467,7 +499,7 @@ export async function fetchAnalyticsData(
     });
   }
 
-  const sumScenarios = (key: keyof Omit<ProductImpactEntry, "productId" | "productTitle" | "hasCostData">): ScenarioValues =>
+  const sumScenarios = (key: "revenueBest" | "revenueWorst" | "profitBest" | "profitWorst"): ScenarioValues =>
     impactByProduct.reduce(
       (acc, e) => ({
         revenue: acc.revenue + (e[key] as ScenarioValues).revenue,
@@ -480,6 +512,7 @@ export async function fetchAnalyticsData(
   const priceImpact: PriceImpactData | null = impactByProduct.length > 0
     ? {
         hasCostData: impactByProduct.some((e) => e.hasCostData),
+        hasShortExperiment: impactByProduct.some((e) => e.isShortExperiment),
         aggregate: {
           revenueBest: sumScenarios("revenueBest"),
           revenueWorst: sumScenarios("revenueWorst"),
