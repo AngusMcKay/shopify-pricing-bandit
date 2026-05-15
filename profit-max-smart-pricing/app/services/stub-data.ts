@@ -162,7 +162,9 @@ export interface HistoryRowStats {
   bestProfitPerImpression: number | null;
   worstProfitPerImpression: number | null;
   profitPerImpressionPctDiff: number | null;
-  /** Weekly-rate price impact for this row */
+  priceKpi: ProductPriceKpiData;
+  dailyImpressions: DailyPriceImpressionsData;
+  /** Price impact for this row */
   priceImpact: Omit<ProductImpactEntry, "productId" | "productTitle">;
 }
 

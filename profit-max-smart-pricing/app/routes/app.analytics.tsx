@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -380,11 +380,15 @@ function HistoryTableRow({
   isSelected,
   onSelect,
   onRemove,
+  availableExperiments,
+  onChangeExperiment,
 }: {
   row: HistoryRowStats;
   isSelected: boolean;
   onSelect: () => void;
   onRemove: () => void;
+  availableExperiments: CompletedExperiment[];
+  onChangeExperiment: (newDatetime: string) => void;
 }) {
   const pctDiff = row.profitPerImpressionPctDiff;
   const pctLabel = pctDiff !== null ? `+${pctDiff}%` : "—";
@@ -411,7 +415,21 @@ function HistoryTableRow({
           {row.status}
         </span>
       </td>
-      <td style={tdStyle}>{shortDateFull(row.experimentDatetimeSubmitted)}</td>
+      <td style={tdStyle} onClick={(e) => e.stopPropagation()}>
+        {availableExperiments.length > 1 ? (
+          <select
+            value={row.experimentDatetimeSubmitted}
+            onChange={(e) => onChangeExperiment(e.target.value)}
+            style={{ padding: "2px 6px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
+          >
+            {availableExperiments.map((e) => (
+              <option key={e.experimentDatetimeSubmitted} value={e.experimentDatetimeSubmitted}>
+                {shortDateFull(e.experimentDatetimeSubmitted)} ({e.status})
+              </option>
+            ))}
+          </select>
+        ) : shortDateFull(row.experimentDatetimeSubmitted)}
+      </td>
       <td style={tdStyle}>{row.endedAt ? shortDateFull(row.endedAt) : "—"}</td>
       <td style={tdStyle}>{row.daysRunning}d</td>
       <td style={tdStyle}>{formatCurrency(row.basePrice)}</td>
@@ -459,9 +477,10 @@ export default function AnalyticsPage() {
   // -- History state --
   const [completedExperiments, setCompletedExperiments] = useState<CompletedExperiment[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyRows, setHistoryRows] = useState<HistoryRowStats[]>([]);
+  const [historyRows, setHistoryRows] = useState<{ id: number; row: HistoryRowStats }[]>([]);
   const [historyRowsLoading, setHistoryRowsLoading] = useState<Set<string>>(new Set());
-  const [selectedHistoryKey, setSelectedHistoryKey] = useState<string | null>(null);
+  const [selectedHistoryKey, setSelectedHistoryKey] = useState<number | null>(null);
+  const nextRowIdRef = useRef(0);
   const [ongoingTableCollapsed, setOngoingTableCollapsed] = useState(false);
   const [historyTableCollapsed, setHistoryTableCollapsed] = useState(false);
   const [addProductValue, setAddProductValue] = useState("");
@@ -514,32 +533,46 @@ export default function AnalyticsPage() {
     if (view === "past") loadCompletedExperiments();
   }, [view, loadCompletedExperiments]);
 
-  // -- History: add a product row --
+  // -- History: add a product row (no duplicate guard — user can add same product multiple times) --
   const addHistoryRow = useCallback(async (productId: string, experimentDatetime: string) => {
-    const key = `${productId}|${experimentDatetime}`;
-    if (historyRows.some((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` === key)) return;
-    setHistoryRowsLoading((prev) => new Set(prev).add(key));
+    const loadingKey = `${productId}|${experimentDatetime}|${Date.now()}`;
+    const newId = nextRowIdRef.current++;
+    setHistoryRowsLoading((prev) => new Set(prev).add(loadingKey));
     try {
       const res = await fetch(`/api/analytics-history?action=row&productId=${encodeURIComponent(productId)}&experimentDatetime=${encodeURIComponent(experimentDatetime)}`);
       const json = await res.json() as { row: HistoryRowStats };
-      setHistoryRows((prev) => [...prev, json.row]);
-      if (!selectedHistoryKey) setSelectedHistoryKey(key);
+      setHistoryRows((prev) => [...prev, { id: newId, row: json.row }]);
+      setSelectedHistoryKey((prev) => prev === null ? newId : prev);
     } finally {
-      setHistoryRowsLoading((prev) => { const s = new Set(prev); s.delete(key); return s; });
+      setHistoryRowsLoading((prev) => { const s = new Set(prev); s.delete(loadingKey); return s; });
     }
-  }, [historyRows, selectedHistoryKey]);
+  }, []);
 
-  const removeHistoryRow = (key: string) => {
-    setHistoryRows((prev) => prev.filter((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` !== key));
-    if (selectedHistoryKey === key) {
-      const remaining = historyRows.filter((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` !== key);
-      setSelectedHistoryKey(remaining[0] ? `${remaining[0].productId}|${remaining[0].experimentDatetimeSubmitted}` : null);
-    }
+  const removeHistoryRow = (id: number) => {
+    const remaining = historyRows.filter((r) => r.id !== id);
+    setHistoryRows(remaining);
+    if (selectedHistoryKey === id) setSelectedHistoryKey(remaining[0]?.id ?? null);
   };
+
+  const changeHistoryRowExperiment = useCallback(async (rowId: number, productId: string, newDatetime: string) => {
+    const loadingKey = `${productId}|${newDatetime}|${Date.now()}`;
+    const newId = nextRowIdRef.current++;
+    setHistoryRows((prev) => prev.filter((r) => r.id !== rowId));
+    if (selectedHistoryKey === rowId) setSelectedHistoryKey(null);
+    setHistoryRowsLoading((prev) => new Set(prev).add(loadingKey));
+    try {
+      const res = await fetch(`/api/analytics-history?action=row&productId=${encodeURIComponent(productId)}&experimentDatetime=${encodeURIComponent(newDatetime)}`);
+      const json = await res.json() as { row: HistoryRowStats };
+      setHistoryRows((prev) => [...prev, { id: newId, row: json.row }]);
+      setSelectedHistoryKey(newId);
+    } finally {
+      setHistoryRowsLoading((prev) => { const s = new Set(prev); s.delete(loadingKey); return s; });
+    }
+  }, [selectedHistoryKey]);
 
   // -- History: aggregate priceImpact across all table rows --
   const historyPriceImpact: PriceImpactData | null = historyRows.length > 0 ? (() => {
-    const entries: ProductImpactEntry[] = historyRows.map((r) => ({
+    const entries: ProductImpactEntry[] = historyRows.map(({ row: r }) => ({
       productId: r.productId,
       productTitle: r.productTitle,
       ...r.priceImpact,
@@ -559,11 +592,41 @@ export default function AnalyticsPage() {
   })() : null;
 
   // -- History: selected row detail --
-  const selectedHistoryRow = historyRows.find((r) => `${r.productId}|${r.experimentDatetimeSubmitted}` === selectedHistoryKey);
+  const selectedHistoryRow = historyRows.find(({ id }) => id === selectedHistoryKey)?.row;
 
-  // -- Completed experiments not yet in the table --
-  const addedKeys = new Set(historyRows.map((r) => `${r.productId}|${r.experimentDatetimeSubmitted}`));
-  const availableToAdd = (completedExperiments ?? []).filter((e) => !addedKeys.has(`${e.productId}|${e.experimentDatetimeSubmitted}`));
+  // -- History: per-product chart data derived from selected row --
+  const historyPriceKpi = selectedHistoryRow?.priceKpi;
+  const historyProductBarData = historyPriceKpi
+    ? historyPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, ...historyPriceKpi.data[price.toString()] }))
+    : [];
+  const historyDailyImps = selectedHistoryRow?.dailyImpressions;
+  const historyAllocationBarData = historyDailyImps
+    ? historyDailyImps.dates.map((date, di) => {
+        const counts = historyDailyImps.pricePoints.map((_: number, pi: number) => historyDailyImps.counts[di]?.[pi] ?? 0);
+        const total = counts.reduce((s: number, v: number) => s + v, 0);
+        const entry: Record<string, number | string> = { date };
+        historyDailyImps.pricePoints.forEach((price: number, pi: number) => {
+          const val = counts[pi] ?? 0;
+          entry[`price_${price}`] = allocationMode === "percentage" && total > 0 ? parseFloat(((val / total) * 100).toFixed(1)) : val;
+        });
+        return entry;
+      })
+    : [];
+  const historyAllocationXAxisTicks = buildXAxisTicks(historyDailyImps?.dates ?? []);
+
+  // -- Group experiments by product for dropdown + in-row pickers --
+  const experimentsByProduct = new Map<string, CompletedExperiment[]>();
+  for (const e of completedExperiments ?? []) {
+    const list = experimentsByProduct.get(e.productId) ?? [];
+    list.push(e);
+    experimentsByProduct.set(e.productId, list);
+  }
+  // Sort each product's list newest-first
+  for (const [pid, exps] of experimentsByProduct) {
+    experimentsByProduct.set(pid, [...exps].sort((a, b) => b.experimentDatetimeSubmitted.localeCompare(a.experimentDatetimeSubmitted)));
+  }
+  // Unique products for the main dropdown — one entry per product (the newest experiment)
+  const productsAvailableToAdd = [...experimentsByProduct.values()].map((exps) => exps[0]);
 
   // -- Shared UI helpers --
   const divider = <div style={{ borderBottom: "1px solid #e1e3e5", margin: "4px 0 20px" }} />;
@@ -731,21 +794,23 @@ export default function AnalyticsPage() {
               <select
                 value={addProductValue}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  if (!val) return;
-                  const [productId, datetime] = val.split("|||");
+                  const productId = e.target.value;
+                  if (!productId) return;
                   setAddProductValue("");
-                  addHistoryRow(productId, datetime);
+                  // Always add the newest experiment for this product
+                  const sorted = experimentsByProduct.get(productId) ?? [];
+                  const toAdd = sorted[0];
+                  if (toAdd) addHistoryRow(toAdd.productId, toAdd.experimentDatetimeSubmitted);
                 }}
                 style={{ width: "100%", padding: "8px 10px", fontSize: 14, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
-                disabled={historyLoading || availableToAdd.length === 0}
+                disabled={historyLoading || productsAvailableToAdd.length === 0}
               >
                 <option value="">
-                  {historyLoading ? "Loading…" : availableToAdd.length === 0 ? "No experiments found" : "Add a product experiment…"}
+                  {historyLoading ? "Loading…" : productsAvailableToAdd.length === 0 ? "No experiments found" : "Add a product…"}
                 </option>
-                {availableToAdd.map((e) => (
-                  <option key={`${e.productId}|${e.experimentDatetimeSubmitted}`} value={`${e.productId}|||${e.experimentDatetimeSubmitted}`}>
-                    {e.productTitle} — {e.status === "Active" ? "Active" : `ended ${shortDateFull(e.endedAt!)}`} ({e.daysRunning}d)
+                {productsAvailableToAdd.map((p) => (
+                  <option key={p.productId} value={p.productId}>
+                    {p.productTitle}
                   </option>
                 ))}
               </select>
@@ -774,7 +839,7 @@ export default function AnalyticsPage() {
                       <tr style={{ background: "#f9fafb" }}>
                         <th style={thStyle}>Product</th>
                         <th style={thStyle}>Status</th>
-                        <th style={thStyle}>Started</th>
+                        <th style={thStyle}>Experiment start</th>
                         <th style={thStyle}>Ended</th>
                         <th style={thStyle}>Duration</th>
                         <th style={thStyle}>Base price</th>
@@ -787,21 +852,20 @@ export default function AnalyticsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {historyRows.map((row) => {
-                        const key = `${row.productId}|${row.experimentDatetimeSubmitted}`;
-                        return (
-                          <HistoryTableRow
-                            key={key}
-                            row={row}
-                            isSelected={selectedHistoryKey === key}
-                            onSelect={() => setSelectedHistoryKey(key)}
-                            onRemove={() => removeHistoryRow(key)}
-                          />
-                        );
-                      })}
+                      {historyRows.map(({ id, row }) => (
+                        <HistoryTableRow
+                          key={id}
+                          row={row}
+                          isSelected={selectedHistoryKey === id}
+                          onSelect={() => setSelectedHistoryKey(id)}
+                          onRemove={() => removeHistoryRow(id)}
+                          availableExperiments={experimentsByProduct.get(row.productId) ?? []}
+                          onChangeExperiment={(newDatetime) => changeHistoryRowExperiment(id, row.productId, newDatetime)}
+                        />
+                      ))}
                     </tbody>
                   </table>
-                  {historyRows.some((r) => r.isShortExperiment) && (
+                  {historyRows.some(({ row }) => row.isShortExperiment) && (
                     <div style={{ padding: "8px 12px", fontSize: 12, color: "#7d5a00", borderTop: "1px solid #e1e3e5", background: "#fdf6e3" }}>
                       * Fewer than 7 days of data — weekly projection may not be reliable
                     </div>
@@ -836,14 +900,14 @@ export default function AnalyticsPage() {
             <>
               {divider}
               <PerProductCharts
-                productOptions={historyRows.map((r) => ({ id: `${r.productId}|${r.experimentDatetimeSubmitted}`, title: `${r.productTitle} (${shortDateFull(r.experimentDatetimeSubmitted)})` }))}
-                selectedProductId={`${selectedHistoryRow.productId}|${selectedHistoryRow.experimentDatetimeSubmitted}`}
-                setSelectedProductId={(key) => setSelectedHistoryKey(key)}
-                selectedPriceKpi={undefined}
-                productBarData={[]}
-                selectedDailyImps={undefined}
-                allocationBarData={[]}
-                allocationXAxisTicks={[]}
+                productOptions={historyRows.map(({ id, row: r }) => ({ id: String(id), title: `${r.productTitle} (${shortDateFull(r.experimentDatetimeSubmitted)})` }))}
+                selectedProductId={String(selectedHistoryKey)}
+                setSelectedProductId={(idStr) => setSelectedHistoryKey(Number(idStr))}
+                selectedPriceKpi={historyPriceKpi as never}
+                productBarData={historyProductBarData}
+                selectedDailyImps={historyDailyImps as never}
+                allocationBarData={historyAllocationBarData}
+                allocationXAxisTicks={historyAllocationXAxisTicks}
                 selectedPriceMetric={selectedPriceMetric}
                 setSelectedPriceMetric={setSelectedPriceMetric}
                 allocationMode={allocationMode}

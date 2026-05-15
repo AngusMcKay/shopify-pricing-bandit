@@ -15,7 +15,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import type { HistoryRowStats, ScenarioValues, ProductImpactEntry } from "../services/stub-data";
+import type { HistoryRowStats, ScenarioValues, ProductImpactEntry, ProductPriceKpiData, DailyPriceImpressionsData, Metric } from "../services/stub-data";
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -109,11 +109,11 @@ async function handleRow(merchantId: string, productId: string, experimentDateti
     }),
     db.impressions.findMany({
       where: { MerchantId: merchantId, ProductId: productId, ExperimentDatetimeSubmitted: experimentDate },
-      select: { Price: true },
+      select: { Price: true, Datetime: true },
     }),
     db.purchases.findMany({
       where: { MerchantId: merchantId, ProductId: productId, ExperimentDatetimeSubmitted: experimentDate },
-      select: { Price: true },
+      select: { Price: true, Datetime: true },
     }),
   ]);
 
@@ -174,6 +174,72 @@ async function handleRow(merchantId: string, productId: string, experimentDateti
       ? Math.round(((bestProfitPerImp - worstProfitPerImp) / Math.abs(worstProfitPerImp)) * 100)
       : null;
 
+  // ---- priceKpi ----
+  const priceKpiMetrics: Metric[] = [
+    { id: "profit_per_impression", label: "Profit Per Impression", unit: "currency" },
+    { id: "revenue_per_impression", label: "Revenue Per Impression", unit: "currency" },
+    { id: "conversion_rate", label: "Conversion Rate", unit: "percentage" },
+    { id: "impressions", label: "Total Impressions", unit: "number" },
+    { id: "profit", label: "Total Profit", unit: "currency" },
+    { id: "purchases", label: "Total Purchases", unit: "number" },
+    { id: "revenue", label: "Total Revenue", unit: "currency" },
+  ];
+  const allPriceSortedStrs = [...new Set([...impsByPrice.keys(), ...pursByPrice.keys()])].sort((a, b) => parseFloat(a) - parseFloat(b));
+  const priceKpiData: Record<string, Record<string, number>> = {};
+  for (const priceStr of allPriceSortedStrs) {
+    const imps = impsByPrice.get(priceStr) ?? 0;
+    const purs = pursByPrice.get(priceStr) ?? 0;
+    const price = parseFloat(priceStr);
+    const convRate = imps > 0 ? purs / imps : 0;
+    const totalRevenue = parseFloat((purs * price).toFixed(2));
+    const totalProfit = parseFloat((purs * (price - cost)).toFixed(2));
+    priceKpiData[priceStr] = {
+      impressions: imps,
+      purchases: purs,
+      conversion_rate: parseFloat((convRate * 100).toFixed(2)),
+      revenue: totalRevenue,
+      profit: totalProfit,
+      revenue_per_impression: imps > 0 ? parseFloat((totalRevenue / imps).toFixed(4)) : 0,
+      profit_per_impression: imps > 0 ? parseFloat((totalProfit / imps).toFixed(4)) : 0,
+    };
+  }
+  const priceKpi: ProductPriceKpiData = {
+    pricePoints: allPriceSortedStrs.map((p) => parseFloat(p)),
+    currency: "USD",
+    metrics: priceKpiMetrics,
+    data: priceKpiData,
+  };
+
+  // ---- dailyImpressions ---- build date range covering the full experiment
+  // Include today — unlike the ongoing view (where today's partial bar looks odd), here
+  // the user explicitly requested this experiment's data so we show everything we have.
+  // Compare by date string, not timestamp — otherwise the loop can stop before today when
+  // the experiment start time is later in the day than the current time (e.g. started at
+  // 14:00 UTC, current time 10:00 UTC → today@14:00 > now, so today would be excluded).
+  const expDates: string[] = [];
+  const endDateStr = isoDate(endDate);
+  for (let d = new Date(experimentDate); isoDate(d) <= endDateStr; d.setDate(d.getDate() + 1)) {
+    expDates.push(isoDate(d));
+  }
+  const filteredDates = expDates;
+  const impsByDatePrice = new Map<string, Map<string, number>>();
+  for (const imp of allImpressions) {
+    const day = isoDate(imp.Datetime);
+    const byPrice = impsByDatePrice.get(day) ?? new Map<string, number>();
+    impsByDatePrice.set(day, byPrice);
+    const k = imp.Price.toString();
+    byPrice.set(k, (byPrice.get(k) ?? 0) + 1);
+  }
+  const dailyImpressions: DailyPriceImpressionsData = {
+    dates: filteredDates,
+    pricePoints: allPriceSortedStrs.map((p) => parseFloat(p)),
+    currency: "USD",
+    counts: filteredDates.map((date) =>
+      allPriceSortedStrs.map((priceStr) => impsByDatePrice.get(date)?.get(priceStr) ?? 0),
+    ),
+  };
+
+  // ---- priceImpact ----
   const priceImpact: Omit<ProductImpactEntry, "productId" | "productTitle"> = {
     hasCostData,
     daysRunning,
@@ -211,6 +277,8 @@ async function handleRow(merchantId: string, productId: string, experimentDateti
     bestProfitPerImpression: bestProfitPerImp,
     worstProfitPerImpression: worstProfitPerImp,
     profitPerImpressionPctDiff,
+    priceKpi,
+    dailyImpressions,
     priceImpact,
   };
 
