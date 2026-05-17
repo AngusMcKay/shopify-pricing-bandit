@@ -164,6 +164,21 @@ export default function Home() {
 
           {divider}
 
+          <ContentSection heading="Lightweight">
+            <p style={{ margin: 0 }}>
+              Profit Max has zero impact on Lighthouse Performance scores — the
+              metric Shopify uses to assess how apps affect storefront loading
+              speed. All storefront logic runs via a deferred script that loads
+              after the page has already rendered, so it has no effect on
+              render-blocking time, Largest Contentful Paint, or any other
+              load-time metric. Prices are hidden and revealed using a CSS
+              opacity transition rather than layout-affecting techniques, so
+              there is no reflow or Cumulative Layout Shift either.
+            </p>
+          </ContentSection>
+
+          {divider}
+
           <ContentSection heading="About the creator">
             <p style={{ margin: 0 }}>
               Profit Max was built by Angus McKay. I've spent 15 years as a data
