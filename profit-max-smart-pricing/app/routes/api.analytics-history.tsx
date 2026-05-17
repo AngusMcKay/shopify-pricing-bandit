@@ -218,10 +218,13 @@ async function handleRow(merchantId: string, productId: string, experimentDateti
   // 14:00 UTC, current time 10:00 UTC → today@14:00 > now, so today would be excluded).
   const expDates: string[] = [];
   const endDateStr = isoDate(endDate);
-  for (let d = new Date(experimentDate); isoDate(d) <= endDateStr; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(experimentDate); isoDate(d) <= endDateStr; d.setUTCDate(d.getUTCDate() + 1)) {
     expDates.push(isoDate(d));
   }
-  const filteredDates = expDates;
+  // Union with actual impression dates — guarantees impression data always shows even if
+  // there's a timezone edge case causing a date to fall outside the generated range.
+  const allImpDateStrs = allImpressions.map((imp) => isoDate(imp.Datetime));
+  const filteredDates = [...new Set([...expDates, ...allImpDateStrs])].sort();
   const impsByDatePrice = new Map<string, Map<string, number>>();
   for (const imp of allImpressions) {
     const day = isoDate(imp.Datetime);

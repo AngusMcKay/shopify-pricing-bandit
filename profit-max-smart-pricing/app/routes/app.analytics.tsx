@@ -50,8 +50,10 @@ const CHART_COLORS = [
 
 const BEST_PROFIT_COLOR = "#50B83C";
 const BEST_COST_COLOR = "#2C6B2F";
+const BEST_REVENUE_COLOR = "#50B83C"; // same lighter green as profit
 const WORST_PROFIT_COLOR = "#F49342";
 const WORST_COST_COLOR = "#BF5C00";
+const WORST_REVENUE_COLOR = "#F49342"; // same lighter orange as profit
 const PRICE_POINT_BAR_COLOR = "#47C1BF";
 
 const SHORT_EXPERIMENT_OPACITY = 0.65;
@@ -96,6 +98,44 @@ function shortTitle(title: string, max = 16): string {
 // ---------------------------------------------------------------------------
 // Shared chart components
 // ---------------------------------------------------------------------------
+
+function ImpactTooltip({ active, payload }: { active?: boolean; payload?: Array<{ name: string; value: number; fill: string }> }) {
+  if (!active || !payload || payload.length === 0) return null;
+  // Group by best/worst stack and compute totals
+  const best = payload.filter((p) => p.name.startsWith("Best"));
+  const worst = payload.filter((p) => p.name.startsWith("Worst"));
+  const bestRevenue = best.reduce((s, p) => s + (p.value ?? 0), 0);
+  const bestProfit = best.find((p) => p.name.includes("Profit"))?.value ?? 0;
+  const bestCost = best.find((p) => p.name.includes("Cost"))?.value ?? 0;
+  const worstRevenue = worst.reduce((s, p) => s + (p.value ?? 0), 0);
+  const worstProfit = worst.find((p) => p.name.includes("Profit"))?.value ?? 0;
+  const worstCost = worst.find((p) => p.name.includes("Cost"))?.value ?? 0;
+  const row = (label: string, value: number, color: string) => (
+    <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: "16px", fontSize: 12 }}>
+      <span style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+        <span style={{ width: 9, height: 9, borderRadius: 2, background: color, display: "inline-block", flexShrink: 0 }} />
+        {label}
+      </span>
+      <span style={{ fontWeight: 600 }}>{formatCurrency(value)}</span>
+    </div>
+  );
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e1e3e5", borderRadius: "4px", padding: "10px 14px", minWidth: 200 }}>
+      {bestRevenue > 0 && <>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "#637381", marginBottom: 4 }}>Best price</div>
+        {row("Revenue", bestRevenue, BEST_REVENUE_COLOR)}
+        {bestCost > 0 && row("Cost", bestCost, BEST_COST_COLOR)}
+        {row("Profit", bestProfit, BEST_PROFIT_COLOR)}
+      </>}
+      {worstRevenue > 0 && <>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "#637381", marginTop: 8, marginBottom: 4 }}>Worst price</div>
+        {row("Revenue", worstRevenue, WORST_REVENUE_COLOR)}
+        {worstCost > 0 && row("Cost", worstCost, WORST_COST_COLOR)}
+        {row("Profit", worstProfit, WORST_PROFIT_COLOR)}
+      </>}
+    </div>
+  );
+}
 
 function ImpactCharts({
   priceImpact,
@@ -151,90 +191,96 @@ function ImpactCharts({
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "16px" }}>
         {/* Chart 1: Aggregate */}
-        <s-section heading={heading1}>
-          <s-paragraph>
-            {description1 ?? (
-              <>
-                Projected {impactMode === "revenue" ? "revenue and costs" : "profit"} over the selected period
-                if the best or worst price point for each product had served all visitors,
-                based on each product&apos;s actual experiment data.
-              </>
-            )}
-          </s-paragraph>
-          <div style={{ width: "100%", height: 300, marginTop: "8px" }}>
-            <ResponsiveContainer>
-              <BarChart data={aggregateImpactData} margin={{ top: 16, right: 24, left: 16, bottom: 8 }} barCategoryGap="30%">
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 13, fontWeight: 600 }} />
-                <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 11 }} width={72} />
-                <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
-                <Legend />
-                {impactMode === "revenue" ? (
-                  <>
-                    <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR} />
-                    <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR} />
-                    <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
-                  </>
-                ) : (
-                  <>
-                    <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                      <LabelList dataKey="best_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
-                    </Bar>
-                    <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                      <LabelList dataKey="worst_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
-                    </Bar>
-                  </>
-                )}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </s-section>
-
-        {/* Chart 2: Per-product */}
-        <s-section heading="Price impact potential by product">
-          <s-paragraph>
-            Same projection broken down by product.{needsScroll ? " Scroll horizontally to see all products." : ""}
-          </s-paragraph>
-          <div style={{ overflowX: needsScroll ? "auto" : "visible", marginTop: "8px" }}>
-            <div style={{ width: needsScroll ? productImpactScrollWidth : "100%", height: 300 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={productImpactData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }} barCategoryGap="25%" barGap={2}>
+        <div style={{ minWidth: 0 }}>
+          <s-section heading={heading1}>
+            <s-paragraph>
+              {description1 ?? (
+                <>Projected {impactMode === "revenue" ? "revenue and costs" : "profit"} if the best or worst price had served all visitors.</>
+              )}
+            </s-paragraph>
+            <div style={{ width: "100%", height: 300, marginTop: "8px" }}>
+              <ResponsiveContainer>
+                <BarChart data={aggregateImpactData} margin={{ top: 16, right: 24, left: 16, bottom: 8 }} barCategoryGap="30%">
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fontSize: 13, fontWeight: 600 }} />
                   <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 11 }} width={72} />
-                  <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
+                  {impactMode === "revenue"
+                    ? <Tooltip content={(props) => <ImpactTooltip active={props.active} payload={props.payload as unknown as Array<{ name: string; value: number; fill: string }>} />} />
+                    : <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
+                  }
                   <Legend />
                   {impactMode === "revenue" ? (
                     <>
-                      <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
-                      </Bar>
-                      <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
-                      </Bar>
-                      <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
-                      </Bar>
-                      <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
-                      </Bar>
+                      <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR} />
+                      <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR} />
+                      <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]} />
                     </>
                   ) : (
                     <>
                       <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        <LabelList dataKey="best_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
                       </Bar>
                       <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
-                        {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        <LabelList dataKey="worst_profit" position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatCurrency(v as number)} />
                       </Bar>
                     </>
                   )}
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </div>
-        </s-section>
+          </s-section>
+        </div>
+
+        {/* Chart 2: Per-product */}
+        <div style={{ minWidth: 0 }}>
+          <s-section heading="Price impact potential by product">
+            <s-paragraph>
+              Same projection broken down by product.{needsScroll ? " Scroll horizontally to see all products." : <>&nbsp;</>}
+            </s-paragraph>
+            <div style={{ overflowX: "auto", marginTop: "8px" }}>
+              <div style={{ width: needsScroll ? productImpactScrollWidth : "100%", height: 300, minWidth: "100%" }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={productImpactData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }} barCategoryGap="25%" barGap={2}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                    <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 11 }} width={72} />
+                    {impactMode === "revenue"
+                      ? <Tooltip content={(props) => <ImpactTooltip active={props.active} payload={props.payload as unknown as Array<{ name: string; value: number; fill: string }>} />} />
+                      : <Tooltip formatter={(v) => formatCurrencyPerWeek(Number(v))} />
+                    }
+                    <Legend />
+                    {impactMode === "revenue" ? (
+                      <>
+                        <Bar dataKey="best_cost" name="Best: Cost" stackId="best" fill={BEST_COST_COLOR}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                        <Bar dataKey="best_profit" name="Best: Profit" stackId="best" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                        <Bar dataKey="worst_cost" name="Worst: Cost" stackId="worst" fill={WORST_COST_COLOR}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_COST_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                        <Bar dataKey="worst_profit" name="Worst: Profit" stackId="worst" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                      </>
+                    ) : (
+                      <>
+                        <Bar dataKey="best_profit" name="Best price profit" fill={BEST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={BEST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                        <Bar dataKey="worst_profit" name="Worst price profit" fill={WORST_PROFIT_COLOR} radius={[3, 3, 0, 0]}>
+                          {productImpactData.map((entry, i) => <Cell key={i} fill={WORST_PROFIT_COLOR} fillOpacity={entry.isShort ? SHORT_EXPERIMENT_OPACITY : 1} />)}
+                        </Bar>
+                      </>
+                    )}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </s-section>
+        </div>
       </div>
     </>
   );
@@ -288,84 +334,98 @@ function PerProductCharts({
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-        <s-section heading="Performance by price point">
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
-            <select
-              value={selectedPriceMetric}
-              onChange={(e) => setSelectedPriceMetric(e.target.value)}
-              style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
-            >
-              {(typedPriceKpi?.metrics ?? []).map((m) => (
-                <option key={m.id} value={m.id}>{m.label}</option>
-              ))}
-            </select>
-          </div>
-          <div style={{ width: "100%", height: 300 }}>
-            <ResponsiveContainer>
-              <BarChart data={productBarData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 11 }} width={64} tickFormatter={(v) => activeMetric ? formatValue(Number(v), activeMetric.unit) : v} />
-                <Tooltip formatter={(value) => [activeMetric ? formatValue(Number(value), activeMetric.unit) : value, activeMetric?.label ?? selectedPriceMetric]} />
-                {activeMetric && (
-                  <Bar dataKey={activeMetric.id} name={activeMetric.label} fill={PRICE_POINT_BAR_COLOR} radius={[3, 3, 0, 0]}>
-                    <LabelList dataKey={activeMetric.id} position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatValue(v as number, activeMetric.unit)} />
-                  </Bar>
-                )}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </s-section>
-
-        <s-section heading="Daily impressions by price">
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
-            <select
-              value={allocationMode}
-              onChange={(e) => setAllocationMode(e.target.value as "percentage" | "absolute")}
-              style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
-            >
-              <option value="percentage">% of daily impressions</option>
-              <option value="absolute">Daily impressions</option>
-            </select>
-          </div>
-          <div style={{ width: "100%", height: 280 }}>
-            <ResponsiveContainer>
-              <BarChart data={allocationBarData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }} barCategoryGap="10%">
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" ticks={allocationXAxisTicks} tickFormatter={shortDate} tick={{ fontSize: 11 }} />
-                <YAxis
-                  tickFormatter={(v) => allocationMode === "percentage" ? `${v}%` : String(v)}
-                  domain={allocationMode === "percentage" ? [0, 100] : ["auto", "auto"]}
-                  ticks={allocationMode === "percentage" ? [0, 25, 50, 75, 100] : undefined}
-                  tick={{ fontSize: 11 }}
-                  width={40}
-                />
-                <Tooltip
-                  labelFormatter={(label: unknown) => shortDate(String(label))}
-                  formatter={(value, name) => [
-                    allocationMode === "percentage" ? `${Number(value).toFixed(1)}%` : String(value),
-                    String(name).replace("price_", "$"),
-                  ]}
-                />
-                <Legend
-                  content={() => (
-                    <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "12px", fontSize: 12, paddingTop: 4 }}>
-                      {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price, idx) => (
-                        <span key={price} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 2, background: CHART_COLORS[idx % CHART_COLORS.length], flexShrink: 0 }} />
-                          ${price}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                />
-                {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number, idx: number) => (
-                  <Bar key={price} dataKey={`price_${price}`} name={`price_${price}`} stackId="stack" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+        <div style={{ minWidth: 0 }}>
+          <s-section heading="Performance by price point">
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
+              <select
+                value={selectedPriceMetric}
+                onChange={(e) => setSelectedPriceMetric(e.target.value)}
+                style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
+              >
+                {(typedPriceKpi?.metrics ?? []).map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </s-section>
+              </select>
+            </div>
+            <div style={{ width: "100%", height: 300 }}>
+              <ResponsiveContainer>
+                <BarChart data={productBarData} margin={{ top: 16, right: 16, left: 16, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                  <YAxis tick={{ fontSize: 11 }} width={64} tickFormatter={(v) => activeMetric ? formatValue(Number(v), activeMetric.unit) : v} />
+                  <Tooltip formatter={(value) => [activeMetric ? formatValue(Number(value), activeMetric.unit) : value, activeMetric?.label ?? selectedPriceMetric]} />
+                  {activeMetric && (
+                    <Bar dataKey={activeMetric.id} name={activeMetric.label} fill={PRICE_POINT_BAR_COLOR} radius={[3, 3, 0, 0]}>
+                      <LabelList dataKey={activeMetric.id} position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatValue(v as number, activeMetric.unit)} />
+                    </Bar>
+                  )}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </s-section>
+        </div>
+
+        <div style={{ minWidth: 0 }}>
+          <s-section heading="Daily impressions by price">
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
+              <select
+                value={allocationMode}
+                onChange={(e) => setAllocationMode(e.target.value as "percentage" | "absolute")}
+                style={{ padding: "4px 8px", fontSize: 13, borderRadius: "4px", border: "1px solid #c4cdd5", background: "#fff", cursor: "pointer" }}
+              >
+                <option value="percentage">% of daily impressions</option>
+                <option value="absolute">Daily impressions</option>
+              </select>
+            </div>
+            {(() => {
+              const MIN_DAY_WIDTH = 14;
+              const daysCount = allocationBarData.length;
+              const needsDayScroll = daysCount > 60;
+              const dayScrollWidth = Math.max(400, daysCount * MIN_DAY_WIDTH);
+              return (
+                <div style={{ overflowX: "auto" }}>
+                  <div style={{ width: needsDayScroll ? dayScrollWidth : "100%", height: 300, minWidth: "100%" }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={allocationBarData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }} barCategoryGap="10%">
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="date" ticks={allocationXAxisTicks} tickFormatter={shortDate} tick={{ fontSize: 11 }} />
+                        <YAxis
+                          tickFormatter={(v) => allocationMode === "percentage" ? `${v}%` : String(v)}
+                          domain={allocationMode === "percentage" ? [0, 100] : ["auto", "auto"]}
+                          ticks={allocationMode === "percentage" ? [0, 25, 50, 75, 100] : undefined}
+                          tick={{ fontSize: 11 }}
+                          width={40}
+                        />
+                        <Tooltip
+                          labelFormatter={(label: unknown) => shortDate(String(label))}
+                          formatter={(value, name) => [
+                            allocationMode === "percentage" ? `${Number(value).toFixed(1)}%` : String(value),
+                            String(name).replace("price_", "$"),
+                          ]}
+                        />
+                        <Legend
+                          content={() => (
+                            <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "12px", fontSize: 12, paddingTop: 4 }}>
+                              {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price, idx) => (
+                                <span key={price} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                                  <span style={{ width: 10, height: 10, borderRadius: 2, background: CHART_COLORS[idx % CHART_COLORS.length], flexShrink: 0 }} />
+                                  ${price}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        />
+                        {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number, idx: number) => (
+                          <Bar key={price} dataKey={`price_${price}`} name={`price_${price}`} stackId="stack" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              );
+            })()}
+          </s-section>
+        </div>
       </div>
     </>
   );
@@ -890,7 +950,7 @@ export default function AnalyticsPage() {
                 impactMode={historyImpactMode}
                 toggleButton={makeToggleButton(historyImpactMode, setHistoryImpactMode)}
                 heading1="Projected weekly price effect (selected experiments)"
-                description1="Projected weekly profit if the best or worst price point for each selected experiment had served all visitors. Values are normalised to a weekly rate to allow comparison across experiments of different lengths."
+                description1={<>Projected weekly profit if the best or worst price point for each selected experiment had served all visitors.{" "}<span title="Values are normalised to a weekly rate to allow comparison across experiments of different lengths." style={{ cursor: "help", color: "#637381", fontSize: 13 }}>ⓘ</span></>}
               />
             </>
           )}

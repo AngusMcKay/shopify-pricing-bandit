@@ -10,7 +10,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return { stats };
 };
 
-export default function Overview() {
+
+export default function Home() {
   const { stats } = useLoaderData<typeof loader>();
 
   return (
@@ -52,6 +53,28 @@ export default function Overview() {
         </s-stack>
       </s-section>
 
+      <div style={{
+        background: "linear-gradient(135deg, #1a3a5c 0%, #2d6a9f 100%)",
+        borderRadius: "8px",
+        padding: "48px 40px 36px",
+        marginBottom: "4px",
+        textAlign: "center",
+      }}>
+        <h1 style={{ margin: "0 0 8px", fontSize: 28, fontWeight: 800, color: "#fff", letterSpacing: "-0.02em" }}>
+          Profit Max: Automated Price Optimisation
+        </h1>
+        <p style={{ margin: "0 0 28px", fontSize: 15, color: "rgba(255,255,255,0.7)", fontWeight: 400 }}>
+          By PodencoLabs
+        </p>
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "12px", fontSize: 15, fontWeight: 600 }}>
+          <a href="/app/products" style={{ color: "#fff", textDecoration: "none", opacity: 0.9 }}>Set up products</a>
+          <span style={{ color: "rgba(255,255,255,0.4)" }}>|</span>
+          <a href="/app/analytics" style={{ color: "#fff", textDecoration: "none", opacity: 0.9 }}>View analytics</a>
+          <span style={{ color: "rgba(255,255,255,0.4)" }}>|</span>
+          <a href="/app/docs" style={{ color: "#fff", textDecoration: "none", opacity: 0.9 }}>Read the docs</a>
+        </div>
+      </div>
+
       <s-section heading="How it works">
         <s-stack direction="block" gap="base">
           <s-paragraph>
@@ -62,7 +85,9 @@ export default function Overview() {
           <s-paragraph>
             Unlike traditional A/B tests, there is no fixed "winner" phase. The
             algorithm keeps adapting as customer behaviour changes with seasons,
-            trends, and promotions.
+            trends, promotions, and competitor activity. When you're ready, check
+            the analytics page to see which prices performed best — then set the
+            winner as a permanent price.
           </s-paragraph>
         </s-stack>
       </s-section>
@@ -78,51 +103,45 @@ export default function Overview() {
             The multi-armed bandit approach starts exploring multiple price points
             simultaneously and immediately shifts traffic toward what is working.
             Prices that underperform get less and less traffic over time —
-            so you learn faster and lose less revenue while learning.
+            so you learn faster and start benefiting from the most profitable prices sooner.
+          </s-paragraph>
+          <s-paragraph>
+            A/B testing also requires dedicated time and multiple rounds to iterate
+            over many options. A bandit approach is more click-and-go: once you
+            activate a product, the algorithm does all the ongoing work. You can
+            leave it running permanently, constantly testing price points and
+            adapting as things change. Or cancel at any point and review the
+            analytics to see which prices worked best — then set a permanent price
+            with confidence.
           </s-paragraph>
         </s-stack>
       </s-section>
 
-      <s-section heading="Profit optimisation">
+      <s-section heading="Not dynamic pricing">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            By default, Profit Max optimises for revenue — the price that generates
-            the most total sales income. If you enter a cost of production for a
-            product, the algorithm shifts to optimising for profit instead, factoring
-            in your margins.
-          </s-paragraph>
-          <s-paragraph>
-            This means a slightly lower-volume price point that maintains better
-            margins can outrank a high-volume, low-margin option. Great for products
-            where margin matters more than top-line sales.
+            Profit Max is not dynamic pricing. It does not adjust prices based on
+            individual customer circumstances — there is no surge pricing, no
+            personalised offers, and no attempt to extract maximum willingness to
+            pay from individual shoppers. Every visitor gets assigned a randomly
+            chosen price from the price points being tested. Profit Max is simply an efficient way to test many price
+            points across all your visitors and find which one works best for your
+            business.
           </s-paragraph>
         </s-stack>
       </s-section>
 
-      <s-section heading="Regional variation">
+      <s-section heading="About the creator">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            Price sensitivity varies by market. Enable regional variation on any
-            product and Profit Max will run independent optimisation per country or
-            region, finding the right price for each market rather than forcing a
-            global compromise.
+            Profit Max was built by Angus McKay. I've spent 15 years as a data
+            science and analytics professional, building pricing, discount, and
+            recommendation systems for commercial enterprises. More recently,
+            I've turned my attention to smaller-scale local operations — including
+            setting up a coworking space and growing it by optimising its
+            subscription structure. Profit Max is the result of applying those
+            same techniques in a form any Shopify merchant can use.
           </s-paragraph>
-        </s-stack>
-      </s-section>
-
-      <s-section heading="Get started">
-        <s-stack direction="block" gap="base">
-          <s-stack direction="inline" gap="base">
-            <s-button variant="primary">
-              <s-link href="/app/products">Set up products</s-link>
-            </s-button>
-            <s-button variant="secondary">
-              <s-link href="/app/analytics">View analytics</s-link>
-            </s-button>
-            <s-button variant="tertiary">
-              <s-link href="/app/docs">Read the docs</s-link>
-            </s-button>
-          </s-stack>
         </s-stack>
       </s-section>
     </s-page>
