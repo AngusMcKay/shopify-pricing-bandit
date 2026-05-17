@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { AppBanner } from "../components/AppBanner";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
@@ -40,23 +41,48 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // Chart colour palette
 // ---------------------------------------------------------------------------
 const CHART_COLORS = [
-  "#5C6AC4",
-  "#47C1BF",
-  "#F49342",
-  "#50B83C",
-  "#9C6ADE",
-  "#DE3618",
+  "#2a5570", // teal
+  "#c0522a", // terracotta
+  "#c08a28", // ochre
+  "#7a2020", // burgundy
+  "#5c3220", // brown
+  "#3d5548", // forest mid
 ];
 
-const BEST_PROFIT_COLOR = "#50B83C";
-const BEST_COST_COLOR = "#2C6B2F";
-const BEST_REVENUE_COLOR = "#50B83C"; // same lighter green as profit
-const WORST_PROFIT_COLOR = "#F49342";
-const WORST_COST_COLOR = "#BF5C00";
-const WORST_REVENUE_COLOR = "#F49342"; // same lighter orange as profit
-const PRICE_POINT_BAR_COLOR = "#47C1BF";
+const BEST_PROFIT_COLOR = "#5a8a6a";  // lighter forest green
+const BEST_COST_COLOR = "#2e4a3a";    // dark forest
+const BEST_REVENUE_COLOR = "#5a8a6a";
+const WORST_PROFIT_COLOR = "#c0522a"; // terracotta
+const WORST_COST_COLOR = "#8a3a1e";   // dark terracotta
+const WORST_REVENUE_COLOR = "#c0522a";
+const PRICE_POINT_BAR_COLOR = "#2a5570"; // teal
 
 const SHORT_EXPERIMENT_OPACITY = 0.65;
+
+// Rank-ordered palette: best → worst (green, teal, brown, ochre, terracotta)
+const RANK_PALETTE = ["#5a8a6a", "#2a5570", "#5c3220", "#c08a28", "#c0522a"];
+
+function rankPalette(n: number): string[] {
+  if (n <= 1) return [RANK_PALETTE[0]];
+  if (n === 2) return [RANK_PALETTE[0], RANK_PALETTE[4]];
+  if (n === 3) return [RANK_PALETTE[0], RANK_PALETTE[1], RANK_PALETTE[4]];
+  if (n === 4) return [RANK_PALETTE[0], RANK_PALETTE[1], RANK_PALETTE[3], RANK_PALETTE[4]];
+  return RANK_PALETTE;
+}
+
+type PriceKpiShape = { pricePoints: number[]; data: Record<string, Record<string, number>> };
+
+function buildPriceColorMap(priceKpi: PriceKpiShape | undefined): Map<number, string> {
+  if (!priceKpi || priceKpi.pricePoints.length === 0) return new Map();
+  const sorted = [...priceKpi.pricePoints].sort((a, b) => {
+    const ppiA = priceKpi.data[String(a)]?.profit_per_impression ?? 0;
+    const ppiB = priceKpi.data[String(b)]?.profit_per_impression ?? 0;
+    if (ppiB !== ppiA) return ppiB - ppiA;
+    return a - b; // tie-break: lower price ranks better
+  });
+  const palette = rankPalette(Math.min(sorted.length, 5));
+  return new Map(sorted.map((price, rank) => [price, palette[rank] ?? RANK_PALETTE[4]]));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,7 +174,7 @@ function ImpactCharts({
   impactMode: "revenue" | "profit";
   toggleButton: (mode: "revenue" | "profit", label: string) => React.ReactNode;
   heading1?: string;
-  description1?: string;
+  description1?: React.ReactNode;
 }) {
   const aggImpact = priceImpact.aggregate;
   const aggregateImpactData = [{
@@ -317,6 +343,7 @@ function PerProductCharts({
     ?? (selectedPriceKpi as AnalyticsData["productPriceKpi"][string] | undefined)?.metrics[0];
   const typedPriceKpi = selectedPriceKpi as AnalyticsData["productPriceKpi"][string] | undefined;
   const typedDailyImps = selectedDailyImps as AnalyticsData["dailyPriceImpressions"][string] | undefined;
+  const priceColorMap = buildPriceColorMap(typedPriceKpi as PriceKpiShape | undefined);
 
   return (
     <>
@@ -356,6 +383,9 @@ function PerProductCharts({
                   <Tooltip formatter={(value) => [activeMetric ? formatValue(Number(value), activeMetric.unit) : value, activeMetric?.label ?? selectedPriceMetric]} />
                   {activeMetric && (
                     <Bar dataKey={activeMetric.id} name={activeMetric.label} fill={PRICE_POINT_BAR_COLOR} radius={[3, 3, 0, 0]}>
+                      {productBarData.map((entry, i) => (
+                        <Cell key={i} fill={priceColorMap.get(entry._price as number) ?? PRICE_POINT_BAR_COLOR} />
+                      ))}
                       <LabelList dataKey={activeMetric.id} position="top" style={{ fontSize: 11, fontWeight: 600 }} formatter={(v: unknown) => formatValue(v as number, activeMetric.unit)} />
                     </Bar>
                   )}
@@ -406,17 +436,17 @@ function PerProductCharts({
                         <Legend
                           content={() => (
                             <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "12px", fontSize: 12, paddingTop: 4 }}>
-                              {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price, idx) => (
+                              {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price) => (
                                 <span key={price} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                  <span style={{ width: 10, height: 10, borderRadius: 2, background: CHART_COLORS[idx % CHART_COLORS.length], flexShrink: 0 }} />
+                                  <span style={{ width: 10, height: 10, borderRadius: 2, background: priceColorMap.get(price) ?? CHART_COLORS[0], flexShrink: 0 }} />
                                   ${price}
                                 </span>
                               ))}
                             </div>
                           )}
                         />
-                        {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number, idx: number) => (
-                          <Bar key={price} dataKey={`price_${price}`} name={`price_${price}`} stackId="stack" fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                        {[...(typedDailyImps?.pricePoints ?? [])].sort((a, b) => a - b).map((price: number) => (
+                          <Bar key={price} dataKey={`price_${price}`} name={`price_${price}`} stackId="stack" fill={priceColorMap.get(price) ?? CHART_COLORS[0]} />
                         ))}
                       </BarChart>
                     </ResponsiveContainer>
@@ -459,7 +489,7 @@ function HistoryTableRow({
       style={{
         cursor: "pointer",
         background: isSelected ? "#f4f6ff" : undefined,
-        borderLeft: isSelected ? "3px solid #5C6AC4" : "3px solid transparent",
+        borderLeft: isSelected ? "3px solid #2a5570" : "3px solid transparent",
       }}
     >
       <td style={tdStyle}>
@@ -558,7 +588,7 @@ export default function AnalyticsPage() {
   // -- Ongoing chart data --
   const selectedPriceKpi = productPriceKpi[selectedProductId];
   const productBarData = selectedPriceKpi
-    ? selectedPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, ...selectedPriceKpi.data[price.toString()] }))
+    ? selectedPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, _price: price, ...selectedPriceKpi.data[price.toString()] }))
     : [];
 
   const selectedDailyImps = dailyPriceImpressions[selectedProductId];
@@ -657,7 +687,7 @@ export default function AnalyticsPage() {
   // -- History: per-product chart data derived from selected row --
   const historyPriceKpi = selectedHistoryRow?.priceKpi;
   const historyProductBarData = historyPriceKpi
-    ? historyPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, ...historyPriceKpi.data[price.toString()] }))
+    ? historyPriceKpi.pricePoints.map((price) => ({ label: `$${price}`, _price: price, ...historyPriceKpi.data[price.toString()] }))
     : [];
   const historyDailyImps = selectedHistoryRow?.dailyImpressions;
   const historyAllocationBarData = historyDailyImps
@@ -698,7 +728,7 @@ export default function AnalyticsPage() {
         onClick={() => setMode(mode)}
         style={{
           padding: "6px 14px", borderRadius: "4px", border: "1px solid #c4cdd5",
-          background: currentMode === mode ? "#5C6AC4" : "#fff",
+          background: currentMode === mode ? "#2a5570" : "#fff",
           color: currentMode === mode ? "#fff" : "#212b36",
           fontWeight: 600, fontSize: 13, cursor: "pointer",
         }}
@@ -709,13 +739,15 @@ export default function AnalyticsPage() {
 
   const viewTabStyle = (active: boolean): React.CSSProperties => ({
     padding: "8px 20px", borderRadius: "4px", border: "1px solid #c4cdd5",
-    background: active ? "#5C6AC4" : "#fff",
+    background: active ? "#2a5570" : "#fff",
     color: active ? "#fff" : "#212b36",
     fontWeight: 600, fontSize: 14, cursor: "pointer",
   });
 
   return (
-    <s-page heading="Analytics" inlineSize="large">
+    <>
+      <AppBanner activePage="analytics" />
+      <s-page heading="Analytics" inlineSize="large">
       {/* ------------------------------------------------------------------ */}
       {/* View toggle + global time period (ongoing only)                     */}
       {/* ------------------------------------------------------------------ */}
@@ -755,7 +787,7 @@ export default function AnalyticsPage() {
                 </h3>
                 <button
                   onClick={() => setOngoingTableCollapsed((v) => !v)}
-                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#5C6AC4", fontWeight: 600 }}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#2a5570", fontWeight: 600 }}
                 >
                   {ongoingTableCollapsed ? "Expand ▾" : "Collapse ▴"}
                 </button>
@@ -887,7 +919,7 @@ export default function AnalyticsPage() {
                 </h3>
                 <button
                   onClick={() => setHistoryTableCollapsed((v) => !v)}
-                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#5C6AC4", fontWeight: 600 }}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#2a5570", fontWeight: 600 }}
                 >
                   {historyTableCollapsed ? "Expand ▾" : "Collapse ▴"}
                 </button>
@@ -978,6 +1010,7 @@ export default function AnalyticsPage() {
         </>
       )}
     </s-page>
+    </>
   );
 }
 

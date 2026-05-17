@@ -1,6 +1,7 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { AppBanner } from "../components/AppBanner";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -9,7 +10,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function DocsPage() {
   return (
-    <s-page heading="Documentation & FAQ">
+    <>
+      <AppBanner activePage="docs" />
+      <s-page heading="Documentation & FAQ" inlineSize="large">
       {/* ------------------------------------------------------------------ */}
       {/* Quick navigation                                                    */}
       {/* ------------------------------------------------------------------ */}
@@ -391,6 +394,7 @@ export default function DocsPage() {
         </s-stack>
       </s-section>
     </s-page>
+    </>
   );
 }
 

@@ -181,10 +181,8 @@ export interface AnalyticsData {
 }
 
 export interface OverviewStats {
-  activeExperiments: number;
   productsEnrolled: number;
   daysRunning: number;
-  avgRevenueUplift: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,13 +253,11 @@ export async function fetchExperimentConfigs(): Promise<
   }));
 }
 
-/** GET /api/overview-stats */
+/** GET /api/overview-stats — replaced by direct DB query in loader */
 export async function fetchOverviewStats(): Promise<OverviewStats> {
   return {
-    activeExperiments: 3,
-    productsEnrolled: 3,
-    daysRunning: 14,
-    avgRevenueUplift: "+12.4%",
+    productsEnrolled: 0,
+    daysRunning: 0,
   };
 }
 

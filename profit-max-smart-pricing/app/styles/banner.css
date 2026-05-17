@@ -1,0 +1,185 @@
+/* ============================================================
+   Profit Max brand CSS
+   Import in root.tsx via links export
+   ============================================================ */
+
+:root {
+  --pm-forest:       #2e3f36;
+  --pm-forest-mid:   #3d5548;
+  --pm-forest-deep:  #1e2d26;
+  --pm-sand:         #e0d5bc;
+  --pm-cream:        #f5f1e8;
+  --pm-page-bg:      #f2ede4;
+  --pm-border:       #ddd6c8;
+  --pm-text-dark:    #1c1c1a;
+  --pm-text-mid:     #4a4a45;
+  --pm-text-light:   #7a7a72;
+}
+
+/* Shared title colour helpers (used in both hero and collapsed banner) */
+.pm-title-cream { color: var(--pm-cream); }
+.pm-title-sand  { color: var(--pm-sand);  }
+
+/* ---- Noise overlay (shared) ---- */
+.pm-noise::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ============================================================
+   Expanded Hero Banner (Home page)
+   ============================================================ */
+
+.pm-hero {
+  background: var(--pm-forest);
+  position: relative;
+  overflow: hidden;
+  padding: 44px 52px 0;
+}
+
+.pm-hero::after {
+  content: '';
+  position: absolute;
+  top: -80px;
+  right: -80px;
+  width: 360px;
+  height: 360px;
+  background: radial-gradient(circle, rgba(192,138,40,0.09) 0%, transparent 65%);
+  pointer-events: none;
+}
+
+.pm-hero-inner {
+  position: relative;
+  z-index: 2;
+}
+
+.pm-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.pm-logo-mark {
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--pm-forest-mid) 0%, var(--pm-forest-deep) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.07);
+  border: 1px solid rgba(224,213,188,0.1);
+  flex-shrink: 0;
+}
+
+.pm-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.pm-maker {
+  font-size: 11.5px;
+  color: rgba(224,213,188,0.38);
+  letter-spacing: 0.06em;
+  margin-top: 3px;
+}
+
+.pm-hero-nav {
+  display: flex;
+  margin-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.pm-hero-nav a {
+  padding: 13px 26px;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(224,213,188,0.48);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.pm-hero-nav a:hover { color: rgba(224,213,188,0.8); }
+
+.pm-hero-nav a.pm-active {
+  color: var(--pm-sand);
+  border-bottom: 2px solid var(--pm-sand);
+}
+
+/* ============================================================
+   Collapsed Brand Strip (all other pages — no nav)
+   ============================================================ */
+
+.pm-banner {
+  background: var(--pm-forest);
+  position: relative;
+  overflow: hidden;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  height: 54px;
+}
+
+.pm-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  z-index: 2;
+}
+
+.pm-logo-sm {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--pm-forest-mid) 0%, var(--pm-forest-deep) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(224,213,188,0.1);
+  flex-shrink: 0;
+}
+
+.pm-banner-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.pm-banner-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+  z-index: 2;
+}
+
+.pm-banner-nav a {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(224,213,188,0.48);
+  text-decoration: none;
+  border-radius: 5px;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+.pm-banner-nav a:hover { color: rgba(224,213,188,0.85); }
+
+.pm-banner-nav a.pm-active {
+  color: var(--pm-sand);
+  background: rgba(224,213,188,0.1);
+}

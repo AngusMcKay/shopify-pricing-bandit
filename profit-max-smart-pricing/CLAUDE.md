@@ -128,7 +128,7 @@ A Shopify embedded app that runs automated price experiments (A/B testing with T
 - **Exclusion-based price element scoping**: `queryPriceEls()` finds all price elements then excludes those inside carousel/recommendations containers (regex: `CAROUSEL_RE`), preferring elements near the cart form. Results are cached and invalidated on section re-render.
 - **Probability is per base variant group**: `1 / pricePointCount`, not `1 / totalVariants`. E.g., 3 sizes × 5 prices = probability 0.2 per price point, not 0.067.
 
-## Current State (as of 2026-04-19)
+## Current State (as of 2026-05-17)
 
 ### What's Working
 - Experiment activation/cancellation with multi-product support
@@ -139,35 +139,13 @@ A Shopify embedded app that runs automated price experiments (A/B testing with T
 - Embed status checking and theme publish webhook
 - In-app notifications when embed is disabled
 - Debug mode (`?pm_debug=1`) with comprehensive console logging
+- Embed block in `<head>` with anti-flicker via `opacity:0` — committed in `45f64fa`
+- All Liquid consolidated into the embed block (no theme file editing)
+- `write_themes` scope removed from `shopify.app.toml`
 
-### Uncommitted Changes (IMPORTANT — not yet deployed)
-These changes are staged but not committed. They represent a major architectural improvement:
-
-1. **Embed block moved from `target: "body"` to `target: "head"`** — This is the fundamental anti-flicker fix. Previously the embed injected at end of `<body>`, meaning anti-flicker CSS arrived after the page had already rendered. Now it's in `<head>` before any body content.
-
-2. **All Liquid consolidated into the embed block** — The `__pmConfig`, `__pmPageProductIds`, `__pmPageProductId` injection that was previously done by manually editing `layout/theme.liquid` (via `themeHeadInjection.server.ts`) is now part of the embed block's own Liquid. This eliminates theme file editing entirely.
-
-3. **Anti-flicker changed from `visibility:hidden` to `opacity:0` with CSS transition** — Smoother reveal, elements still occupy layout space (no reflow jump). Controlled by `html.pm-prices-ready` class.
-
-4. **`write_themes` scope removed** from `shopify.app.toml` — No longer needed since we don't edit theme files.
-
-5. **`themeHeadInjection.server.ts` is now dead code** — All imports removed from `api.activate.tsx` and `webhooks.themes.publish.tsx`. Safe to delete.
-
-6. **Performance optimizations in `profit-max.js`**:
-   - `queryPriceEls()` results cached, invalidated on section re-render
-   - Variant switch uses `requestAnimationFrame` instead of `setTimeout(200)` — eliminates 200ms blank price gap
-   - MutationObserver no longer hides prices before re-applying (just re-applies in 50ms)
-   - Variant suppression observer scoped to product section instead of `document.body`
-
-7. **Collection page batch cache removed** — The sessionStorage cache for batch API responses was causing stale results when new experiments were activated mid-session. Per-product assignment caching (under `pm_assign<id>`) is preserved.
-
-### Known Issue — Deploy Blocker
-The Liquid line `{{ pm_cfg | default: '{}' | json }}` causes a deploy error because the `}}` inside the default value `'{}'` is parsed as the closing Liquid delimiter. This needs to be restructured before deploying — e.g., assign the default to a variable first:
-```liquid
-{%- assign pm_cfg_raw = pm_cfg | default: '{}' -%}
-window.__pmConfig={{ pm_cfg_raw | json }};
-```
-**This must be fixed before the next deploy.**
+### Previously Noted Issues — Now Resolved
+- ~~**Liquid deploy blocker**~~: The `{{ pm_cfg | default: '{}' | json }}` parsing bug is fixed — current file uses `pm_cfg_raw` variable pattern. Committed in `45f64fa`.
+- ~~**Uncommitted embed block changes**~~: `target: "head"`, anti-flicker, Liquid consolidation, performance optimisations, and batch cache removal all committed in `45f64fa`.
 
 ### Known Issue — Scope Re-authorization
 After deploying with the changed scopes (removed `write_themes`), merchants will need to re-authorize. The dev store may need `shopify app dev` re-run to pick up the scope change. Access scopes are usually auto-granted on dev.

@@ -1,4 +1,21 @@
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import type { LinksFunction } from "react-router";
+import bannerStyles from "./styles/banner.css?url";
+
+export const links: LinksFunction = () => [
+  {
+    rel: "preconnect",
+    href: "https://fonts.googleapis.com",
+  },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&display=swap",
+  },
+  {
+    rel: "stylesheet",
+    href: bannerStyles,
+  },
+];
 
 export default function App() {
   return (

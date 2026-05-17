@@ -4,6 +4,7 @@ import { useBlocker, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { AppBanner } from "../components/AppBanner";
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -812,7 +813,9 @@ export default function ProductsPage() {
   );
 
   return (
-    <s-page heading="Product Setup">
+    <>
+      <AppBanner activePage="products" />
+      <s-page heading="Product Setup" inlineSize="large">
 
       {/* ------------------------------------------------------------------ */}
       {/* Result banners                                                       */}
@@ -1442,6 +1445,7 @@ export default function ProductsPage() {
         </s-button>
       </s-modal>
     </s-page>
+    </>
   );
 }
 
