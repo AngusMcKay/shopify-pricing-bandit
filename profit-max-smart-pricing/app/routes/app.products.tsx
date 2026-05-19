@@ -835,7 +835,7 @@ export default function ProductsPage() {
             <s-paragraph>{activateResult.message}</s-paragraph>
             {activateResult.isEmbedError && (
               <s-paragraph>
-                To enable it: open your Shopify admin → <s-text type="strong">Online Store → Themes</s-text> → <s-text type="strong">Customize</s-text> → <s-text type="strong">App Embeds</s-text> → toggle on <s-text type="strong">Profit Max</s-text>.
+                To enable it: open your Shopify admin → <s-text type="strong">Online Store → Themes</s-text> → <s-text type="strong">Customize</s-text> → <s-text type="strong">App Embeds</s-text> → toggle on <s-text type="strong">PricePilot</s-text>.
               </s-paragraph>
             )}
           </s-stack>

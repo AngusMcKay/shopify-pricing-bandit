@@ -18,8 +18,8 @@ type AdminClient = Awaited<ReturnType<typeof authenticate.admin>>["admin"];
 // idempotent and safe to call on every state change.
 // ---------------------------------------------------------------------------
 
-const SENTINEL_START = "<!-- ProfitMax:start -->";
-const SENTINEL_END   = "<!-- ProfitMax:end -->";
+const SENTINEL_START = "<!-- PricePilot:start -->";
+const SENTINEL_END   = "<!-- PricePilot:end -->";
 
 /**
  * The Liquid snippet injected just before </head>.
@@ -110,13 +110,13 @@ async function getPublishedThemeId(admin: AdminClient): Promise<string | null> {
     const main = json.data.themes.nodes.find((t) => t.role === "MAIN");
     return main?.id ?? null;
   } catch (e) {
-    console.warn("[ProfitMax] getPublishedThemeId failed:", e);
+    console.warn("[PricePilot] getPublishedThemeId failed:", e);
     return null;
   }
 }
 
 /**
- * Inject the Profit Max Liquid snippet into the published theme's layout files.
+ * Inject the PricePilot Liquid snippet into the published theme's layout files.
  * Idempotent — re-injecting replaces the existing snippet in-place.
  */
 export async function injectHeadSnippet(admin: AdminClient): Promise<void> {
@@ -141,7 +141,7 @@ export async function injectHeadSnippet(admin: AdminClient): Promise<void> {
       if (!node.body) continue;
       let content = node.body.content;
 
-      // Remove any existing ProfitMax snippet (idempotency).
+      // Remove any existing PricePilot snippet (idempotency).
       content = content.replace(
         new RegExp(
           escapeRegex(SENTINEL_START) + "[\\s\\S]*?" + escapeRegex(SENTINEL_END),
@@ -152,7 +152,7 @@ export async function injectHeadSnippet(admin: AdminClient): Promise<void> {
 
       // Insert before </head>.
       if (!content.includes("</head>")) {
-        console.warn(`[ProfitMax] No </head> found in ${node.filename} — skipping`);
+        console.warn(`[PricePilot] No </head> found in ${node.filename} — skipping`);
         continue;
       }
 
@@ -169,14 +169,14 @@ export async function injectHeadSnippet(admin: AdminClient): Promise<void> {
       variables: { themeId, files: filesToWrite },
     });
 
-    console.log(`[ProfitMax] Injected head snippet into ${filesToWrite.map((f) => f.filename).join(", ")}`);
+    console.log(`[PricePilot] Injected head snippet into ${filesToWrite.map((f) => f.filename).join(", ")}`);
   } catch (e) {
-    console.warn("[ProfitMax] injectHeadSnippet failed:", e);
+    console.warn("[PricePilot] injectHeadSnippet failed:", e);
   }
 }
 
 /**
- * Remove the Profit Max snippet from all layout files in the published theme.
+ * Remove the PricePilot snippet from all layout files in the published theme.
  * Safe to call on uninstall or cancel.
  */
 export async function removeHeadSnippet(admin: AdminClient): Promise<void> {
@@ -216,9 +216,9 @@ export async function removeHeadSnippet(admin: AdminClient): Promise<void> {
       variables: { themeId, files: filesToWrite },
     });
 
-    console.log(`[ProfitMax] Removed head snippet from ${filesToWrite.map((f) => f.filename).join(", ")}`);
+    console.log(`[PricePilot] Removed head snippet from ${filesToWrite.map((f) => f.filename).join(", ")}`);
   } catch (e) {
-    console.warn("[ProfitMax] removeHeadSnippet failed:", e);
+    console.warn("[PricePilot] removeHeadSnippet failed:", e);
   }
 }
 
@@ -262,9 +262,9 @@ export async function injectHeadSnippetIntoTheme(
       variables: { themeId, files: filesToWrite },
     });
 
-    console.log(`[ProfitMax] Injected head snippet into theme ${themeId}`);
+    console.log(`[PricePilot] Injected head snippet into theme ${themeId}`);
   } catch (e) {
-    console.warn(`[ProfitMax] injectHeadSnippetIntoTheme(${themeId}) failed:`, e);
+    console.warn(`[PricePilot] injectHeadSnippetIntoTheme(${themeId}) failed:`, e);
   }
 }
 

@@ -6,7 +6,7 @@ import { syncExperimentMetafield } from "../services/experimentMetafield.server"
 // ---------------------------------------------------------------------------
 // products/update webhook
 //
-// Fired whenever a product is changed in any way — including by ProfitMax
+// Fired whenever a product is changed in any way — including by PricePilot
 // itself during activation. We only act when:
 //   1. The product has an Active experiment in our DB.
 //   2. The experiment is older than ACTIVATION_GRACE_MS to skip our own writes.
@@ -21,7 +21,7 @@ import { syncExperimentMetafield } from "../services/experimentMetafield.server"
 // ---------------------------------------------------------------------------
 
 // How long after experiment activation to ignore products/update webhooks for
-// that product. Covers the window where ProfitMax itself is creating options
+// that product. Covers the window where PricePilot itself is creating options
 // and variants, which triggers this webhook.
 const ACTIVATION_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -148,7 +148,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // 5. Pause the experiment and notify the merchant
   // -------------------------------------------------------------------------
   console.log(
-    `[ProfitMax] Pausing experiment for ${productGid} on ${shop} — issues: ${issues.join("; ")}`,
+    `[PricePilot] Pausing experiment for ${productGid} on ${shop} — issues: ${issues.join("; ")}`,
   );
 
   await db.experimentLive.updateMany({
@@ -186,7 +186,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { admin } = await unauthenticated.admin(shop);
     await syncExperimentMetafield(admin, shop);
   } catch (e) {
-    console.error("[ProfitMax] products/update: metafield sync failed — storefront may serve stale prices:", e);
+    console.error("[PricePilot] products/update: metafield sync failed — storefront may serve stale prices:", e);
   }
 
   return new Response(null, { status: 200 });

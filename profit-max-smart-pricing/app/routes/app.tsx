@@ -102,7 +102,7 @@ function NotificationBanner({ id, message, type }: NotificationBannerProps) {
   };
 
   return (
-    <s-banner tone={tone} heading="Profit Max notification">
+    <s-banner tone={tone} heading="PricePilot notification">
       <s-stack direction="inline" gap="base">
         <s-paragraph>{message}</s-paragraph>
         <s-button variant="tertiary" onClick={dismiss}>Dismiss</s-button>
@@ -127,11 +127,11 @@ export default function App() {
         <s-link href="/app/docs">Docs &amp; FAQ</s-link>
       </s-app-nav>
       {!embedEnabled && (
-        <s-banner tone="warning" heading="Profit Max embed not enabled">
+        <s-banner tone="warning" heading="PricePilot embed not enabled">
           <s-paragraph>
-            The Profit Max app embed is not enabled on your current theme. Experiments will not run
+            The PricePilot app embed is not enabled on your current theme. Experiments will not run
             until it is enabled. Go to <strong>Online Store → Themes → Customize → App embeds</strong> and
-            toggle on &quot;Profit Max&quot;.
+            toggle on &quot;PricePilot&quot;.
           </s-paragraph>
         </s-banner>
       )}

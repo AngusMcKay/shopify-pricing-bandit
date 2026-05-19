@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "08044d10a562875f9bf4dfdbefcb2e6b"
-name = "Profit Max: Smart Pricing"
+name = "PricePilot: Automated Price Optimisation"
 application_url = "https://example.com"
 embedded = true
 

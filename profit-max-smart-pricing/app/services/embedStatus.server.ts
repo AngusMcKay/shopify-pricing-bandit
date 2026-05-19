@@ -85,7 +85,7 @@ function isEmbedEnabledInSettingsData(json: string): boolean {
     const stripped = json.replace(/^\/\*[\s\S]*?\*\/\s*/, "");
     data = JSON.parse(stripped);
   } catch {
-    console.warn("[ProfitMax] Could not parse settings_data.json");
+    console.warn("[PricePilot] Could not parse settings_data.json");
     return false;
   }
 
@@ -112,7 +112,7 @@ async function checkEmbedOnTheme(
   const content = (settingsFile?.node.body as { content?: string } | null)?.content;
 
   if (!content) {
-    console.warn("[ProfitMax] settings_data.json not found or empty — assuming embed disabled");
+    console.warn("[PricePilot] settings_data.json not found or empty — assuming embed disabled");
     return false;
   }
 
@@ -124,7 +124,7 @@ async function checkEmbedOnTheme(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the Profit Max app embed block is enabled on the merchant's
+ * Returns true if the PricePilot app embed block is enabled on the merchant's
  * currently published theme.
  *
  * Returns true as a safe fallback if the API call fails — we don't want a
@@ -141,13 +141,13 @@ export async function isEmbedEnabledOnPublishedTheme(
     );
 
     if (!publishedTheme) {
-      console.warn("[ProfitMax] Could not find published (MAIN) theme — assuming embed enabled");
+      console.warn("[PricePilot] Could not find published (MAIN) theme — assuming embed enabled");
       return true;
     }
 
     return await checkEmbedOnTheme(admin, publishedTheme.id);
   } catch (e) {
-    console.warn("[ProfitMax] isEmbedEnabledOnPublishedTheme failed — assuming enabled:", e);
+    console.warn("[PricePilot] isEmbedEnabledOnPublishedTheme failed — assuming enabled:", e);
     return true;
   }
 }
@@ -163,7 +163,7 @@ export async function isEmbedEnabledOnTheme(
   try {
     return await checkEmbedOnTheme(admin, themeGid);
   } catch (e) {
-    console.warn(`[ProfitMax] isEmbedEnabledOnTheme(${themeGid}) failed — assuming enabled:`, e);
+    console.warn(`[PricePilot] isEmbedEnabledOnTheme(${themeGid}) failed — assuming enabled:`, e);
     return true;
   }
 }

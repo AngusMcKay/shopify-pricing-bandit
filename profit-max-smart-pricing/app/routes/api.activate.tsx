@@ -445,9 +445,9 @@ async function handleActivate(
     return Response.json(
       {
         error:
-          "The Profit Max app embed is not enabled on your published theme. " +
+          "The PricePilot app embed is not enabled on your published theme. " +
           "Please go to your Shopify theme editor, open App Embeds, and enable " +
-          "Profit Max before activating experiments.",
+          "PricePilot before activating experiments.",
         code: "EMBED_NOT_ENABLED",
       },
       { status: 403 },

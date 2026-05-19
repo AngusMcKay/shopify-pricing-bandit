@@ -77,7 +77,7 @@ export async function ensureMetafieldDefinition(admin: AdminClient): Promise<voi
           namespace: PM_METAFIELD_NAMESPACE,
           key: PM_METAFIELD_KEY,
           name: "Active Experiment Config",
-          description: "Experiment configs served to the Profit Max storefront snippet",
+          description: "Experiment configs served to the PricePilot storefront snippet",
           type: "json",
           ownerType: "SHOP",
           access: {
@@ -108,10 +108,10 @@ export async function ensureMetafieldDefinition(admin: AdminClient): Promise<voi
           },
         },
       });
-      console.log("[ProfitMax] Updated metafield definition access to PUBLIC_READ");
+      console.log("[PricePilot] Updated metafield definition access to PUBLIC_READ");
     }
   } catch (e) {
-    console.warn("[ProfitMax] ensureMetafieldDefinition:", e);
+    console.warn("[PricePilot] ensureMetafieldDefinition:", e);
   }
 }
 
@@ -219,11 +219,11 @@ export async function syncExperimentMetafield(
     });
 
     console.log(
-      `[ProfitMax] Synced experiment metafield for ${merchantId} — ${Object.keys(configValue).length} active product(s)`,
+      `[PricePilot] Synced experiment metafield for ${merchantId} — ${Object.keys(configValue).length} active product(s)`,
     );
   } catch (e) {
     // Non-fatal — the metafield is an optimisation, not a hard requirement.
     // The deferred profit-max.js will still fetch config via the API route.
-    console.warn("[ProfitMax] syncExperimentMetafield failed:", e);
+    console.warn("[PricePilot] syncExperimentMetafield failed:", e);
   }
 }

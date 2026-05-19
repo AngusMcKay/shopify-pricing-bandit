@@ -110,7 +110,7 @@ export default function Home() {
           <s-section>
           <ContentSection heading="How it works">
             <p style={{ margin: "0 0 10px" }}>
-              Profit Max continuously tests multiple price points for your products and
+              PricePilot continuously tests multiple price points for your products and
               automatically shifts more traffic toward the prices that perform best —
               without you having to lift a finger.
             </p>
@@ -152,11 +152,11 @@ export default function Home() {
 
           <ContentSection heading="Not dynamic pricing">
             <p style={{ margin: 0 }}>
-              Profit Max is not dynamic pricing. It does not adjust prices based on
+              PricePilot is not dynamic pricing. It does not adjust prices based on
               individual customer circumstances — there is no surge pricing, no
               personalised offers, and no attempt to extract maximum willingness to
               pay from individual shoppers. Every visitor gets assigned a randomly
-              chosen price from the price points being tested. Profit Max is simply
+              chosen price from the price points being tested. PricePilot is simply
               an efficient way to test many price points across all your visitors
               and find which one works best for your business.
             </p>
@@ -166,7 +166,7 @@ export default function Home() {
 
           <ContentSection heading="Lightweight">
             <p style={{ margin: 0 }}>
-              Profit Max has zero impact on Lighthouse Performance scores — the
+              PricePilot has zero impact on Lighthouse Performance scores — the
               metric Shopify uses to assess how apps affect storefront loading
               speed. All storefront logic runs via a deferred script that loads
               after the page has already rendered, so it has no effect on
@@ -181,12 +181,12 @@ export default function Home() {
 
           <ContentSection heading="About the creator">
             <p style={{ margin: 0 }}>
-              Profit Max was built by Angus McKay. I've spent 15 years as a data
+              PricePilot was built by Angus McKay. I've spent 15 years as a data
               science and analytics professional, building pricing, discount, and
               recommendation systems for commercial enterprises. More recently,
               I've turned my attention to smaller-scale local operations — including
               setting up a coworking space and growing it by optimising its
-              subscription structure. Profit Max is the result of applying those
+              subscription structure. PricePilot is the result of applying those
               same techniques in a form any Shopify merchant can use.
             </p>
           </ContentSection>

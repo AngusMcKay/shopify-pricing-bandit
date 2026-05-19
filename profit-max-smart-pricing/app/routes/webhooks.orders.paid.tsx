@@ -121,7 +121,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!experimentSetup) {
-      // This line item is not part of an active Profit Max experiment — skip it.
+      // This line item is not part of an active PricePilot experiment — skip it.
       continue;
     }
 
@@ -271,7 +271,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (invErr) {
       // Non-fatal: log but don't fail the webhook. The purchase record is already saved.
       console.error(
-        `[ProfitMax] Failed to adjust base variant inventory for ${experimentSetup.BaseVariantId}:`,
+        `[PricePilot] Failed to adjust base variant inventory for ${experimentSetup.BaseVariantId}:`,
         invErr,
       );
     }

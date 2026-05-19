@@ -1,5 +1,5 @@
 {%- comment -%}
-  Profit Max — head-injected app embed block.
+  PricePilot — head-injected app embed block.
 
   Renders in <head> (target: "head") so all CSS and inline JS execute
   BEFORE any <body> content is parsed. This eliminates price flicker
@@ -72,7 +72,7 @@ window.__pmPageProductId="{{ product.id }}";
       if (str.indexOf(quoted) !== -1) {
         str = str.split(quoted).join('"' + swapMap[sk] + '"');
         changed = true;
-        if (_dbg) console.log('[ProfitMax] fetch/XHR GID swap:', sk, '→', swapMap[sk]);
+        if (_dbg) console.log('[PricePilot] fetch/XHR GID swap:', sk, '→', swapMap[sk]);
       }
     }
     return changed ? str : null;
@@ -83,7 +83,7 @@ window.__pmPageProductId="{{ product.id }}";
     try {
       var p = JSON.parse(body);
       var ch = false;
-      if (p.id) { var s = swapMap[String(p.id)]; if (s) { p.id = s; ch = true; if (_dbg) console.log('[ProfitMax] cart/add id swap:', p.id, '→', s); } }
+      if (p.id) { var s = swapMap[String(p.id)]; if (s) { p.id = s; ch = true; if (_dbg) console.log('[PricePilot] cart/add id swap:', p.id, '→', s); } }
       if (Array.isArray(p.items)) {
         for (var i = 0; i < p.items.length; i++) {
           if (p.items[i].id) { var si = swapMap[String(p.items[i].id)]; if (si) { p.items[i].id = si; ch = true; } }
@@ -107,7 +107,7 @@ window.__pmPageProductId="{{ product.id }}";
           : (input instanceof Request ? input.url : String(input));
 
         if (_dbg && (url.indexOf('/cart') !== -1 || url.indexOf('graphql') !== -1)) {
-          console.log('[ProfitMax] fetch intercepted:', url);
+          console.log('[PricePilot] fetch intercepted:', url);
         }
 
         // /cart/add — numeric or GID variant id in JSON/FormData/URLSearchParams body.
@@ -176,7 +176,7 @@ window.__pmPageProductId="{{ product.id }}";
 
 {% schema %}
 {
-  "name": "Profit Max",
+  "name": "PricePilot",
   "target": "head",
   "settings": []
 }

@@ -1,5 +1,5 @@
 /**
- * profit-max.js — ProfitMax Smart Pricing storefront snippet
+ * profit-max.js — PricePilot Automated Price Optimisation storefront snippet
  *
  * Sections:
  *   1.   Initialisation        — persistent cookie ID + session ID
@@ -25,7 +25,7 @@
   function dbg() {
     if (!DEBUG) return;
     var args = Array.prototype.slice.call(arguments);
-    args.unshift('[ProfitMax]');
+    args.unshift('[PricePilot]');
     console.log.apply(console, args);
   }
 
@@ -304,7 +304,7 @@
       if (window.__st && window.__st.rtyp === 'product' && window.__st.rid) {
         productNumericId = String(window.__st.rid);
       }
-    } catch (e) { console.warn('[ProfitMax] window.__st read failed:', e); }
+    } catch (e) { console.warn('[PricePilot] window.__st read failed:', e); }
   }
 
   var isProductPage = !!productNumericId;
@@ -318,7 +318,7 @@
 
   if (!isProductPage && !isListPage) { revealPrices(); return; }
   if (!shop) {
-    console.warn('[ProfitMax] window.Shopify.shop unavailable — exiting.');
+    console.warn('[PricePilot] window.Shopify.shop unavailable — exiting.');
     revealPrices(); return;
   }
 
@@ -394,9 +394,9 @@
               ReferrerURL: document.referrer || null,
               UserAgent: navigator.userAgent,
             }),
-          }).catch(function (e) { console.warn('[ProfitMax] Impression POST failed (card):', e); });
+          }).catch(function (e) { console.warn('[PricePilot] Impression POST failed (card):', e); });
           dbg('impression fired for card product', gid, 'price=', firstA.price);
-        } catch (e) { console.warn('[ProfitMax] Impression build error (card):', e); }
+        } catch (e) { console.warn('[PricePilot] Impression build error (card):', e); }
       }
 
       var priceEls = containerEl.querySelectorAll(CARD_PRICE_SELECTORS);
@@ -552,11 +552,11 @@
         dbg('collection fetch URL:', url);
         var res;
         try { res = await fetch(url); } catch (e) {
-          console.warn('[ProfitMax] Collection prices fetch failed:', e);
+          console.warn('[PricePilot] Collection prices fetch failed:', e);
           return;
         }
         if (!res.ok) {
-          console.warn('[ProfitMax] Collection prices fetch status:', res.status);
+          console.warn('[PricePilot] Collection prices fetch status:', res.status);
           return;
         }
 
@@ -568,7 +568,7 @@
         applyCardPrices(priceMap);
 
       } catch (e) {
-        console.warn('[ProfitMax] Collection page error:', e);
+        console.warn('[PricePilot] Collection page error:', e);
       } finally {
         revealPrices();
       }
@@ -650,7 +650,7 @@
         '[for*="_pm_price"],[data-option*="pm_price"]{display:none!important}' +
         'fieldset:has([name*="_pm_price"]),li:has([name*="_pm_price"]){display:none!important}';
       (document.head || document.documentElement).appendChild(style);
-    } catch (e) { console.warn('[ProfitMax] CSS injection failed:', e); }
+    } catch (e) { console.warn('[PricePilot] CSS injection failed:', e); }
   })();
 
   var pmOptionIndex = -1;
@@ -665,7 +665,7 @@
         });
       }
     }
-  } catch (e) { console.warn('[ProfitMax] Shopify.product options patching failed:', e); }
+  } catch (e) { console.warn('[PricePilot] Shopify.product options patching failed:', e); }
   window.__profitMax.pmOptionIndex = pmOptionIndex;
 
   var OPTION_GROUP_CLASS_RE = /option|swatch|variant|selector|picker/i;
@@ -687,7 +687,7 @@
         node = node.parentElement;
       }
       startEl.style.setProperty('display', 'none', 'important');
-    } catch (e) { console.warn('[ProfitMax] hideOptionContainer error:', e); }
+    } catch (e) { console.warn('[PricePilot] hideOptionContainer error:', e); }
   }
 
   function hidePmPriceOptionGroups() {
@@ -717,7 +717,7 @@
       });
 
       hideCartPmProperties();
-    } catch (e) { console.warn('[ProfitMax] hidePmPriceOptionGroups error:', e); }
+    } catch (e) { console.warn('[PricePilot] hidePmPriceOptionGroups error:', e); }
   }
 
   // Hide _pm_price option display in cart line items (cart drawer/popup).
@@ -749,7 +749,7 @@
           el = el.parentElement;
         }
       }
-    } catch (e) { console.warn('[ProfitMax] hideCartPmProperties error:', e); }
+    } catch (e) { console.warn('[PricePilot] hideCartPmProperties error:', e); }
   }
 
   if (document.readyState === 'loading') {
@@ -819,8 +819,8 @@
         });
         obs.observe(suppressRoot, { childList: true, subtree: true });
         setTimeout(function () { obs.disconnect(); }, 15000);
-      } catch (e) { console.warn('[ProfitMax] Variant suppression observer failed:', e); }
-    } catch (e) { console.warn('[ProfitMax] suppressExperimentVariants error:', e); }
+      } catch (e) { console.warn('[PricePilot] Variant suppression observer failed:', e); }
+    } catch (e) { console.warn('[PricePilot] suppressExperimentVariants error:', e); }
   }
 
   // ===========================================================================
@@ -886,7 +886,7 @@
         if (el.textContent !== formatted) el.textContent = formatted;
       });
     } catch (e) {
-      console.warn('[ProfitMax] applyExperimentPrices error:', e);
+      console.warn('[PricePilot] applyExperimentPrices error:', e);
     }
   }
 
@@ -962,7 +962,7 @@
       });
 
     } catch (e) {
-      console.warn('[ProfitMax] watchPriceElements error:', e);
+      console.warn('[PricePilot] watchPriceElements error:', e);
     }
   }
 
@@ -1017,19 +1017,19 @@
         var configRes;
         try { configRes = await fetch(configUrl); }
         catch (e) {
-          console.warn('[ProfitMax] Config fetch network error:', e);
+          console.warn('[PricePilot] Config fetch network error:', e);
           revealPrices(); return;
         }
 
         if (!configRes.ok) {
-          console.warn('[ProfitMax] Config fetch failed:', configRes.status);
+          console.warn('[PricePilot] Config fetch failed:', configRes.status);
           revealPrices(); return;
         }
 
         var config;
         try { config = await configRes.json(); }
         catch (e) {
-          console.warn('[ProfitMax] Config JSON parse error:', e);
+          console.warn('[PricePilot] Config JSON parse error:', e);
           revealPrices(); return;
         }
 
@@ -1043,7 +1043,7 @@
       }
 
       if (!Array.isArray(assignments) || assignments.length === 0) {
-        console.warn('[ProfitMax] Config has no assignments.');
+        console.warn('[PricePilot] Config has no assignments.');
         revealPrices(); return;
       }
 
@@ -1239,7 +1239,7 @@
           if (!idInput) return;
           var swapped = variantSwapMap[String(idInput.value)];
           if (swapped) idInput.value = swapped;
-        } catch (e) { console.warn('[ProfitMax] form submit interceptor error:', e); }
+        } catch (e) { console.warn('[PricePilot] form submit interceptor error:', e); }
       }, true);
 
       // =======================================================================
@@ -1270,8 +1270,8 @@
               ReferrerURL: document.referrer || null,
               UserAgent: navigator.userAgent,
             }),
-          }).catch(function (e) { console.warn('[ProfitMax] Impression POST failed:', e); });
-        } catch (e) { console.warn('[ProfitMax] Impression build error:', e); }
+          }).catch(function (e) { console.warn('[PricePilot] Impression POST failed:', e); });
+        } catch (e) { console.warn('[PricePilot] Impression build error:', e); }
       }
 
       // =======================================================================
@@ -1419,7 +1419,7 @@
       } catch (e) { dbg('recommendation observer error:', e); }
 
     } catch (e) {
-      console.warn('[ProfitMax] Unexpected error in main flow:', e);
+      console.warn('[PricePilot] Unexpected error in main flow:', e);
       revealPrices();
     }
   })();

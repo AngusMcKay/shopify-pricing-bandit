@@ -15,5 +15,5 @@ export async function sendEmail({
   subject: string;
   body: string;
 }): Promise<void> {
-  console.log("[ProfitMax] sendEmail (stub):", { to, subject, body });
+  console.log("[PricePilot] sendEmail (stub):", { to, subject, body });
 }

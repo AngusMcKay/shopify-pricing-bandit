@@ -1,5 +1,5 @@
 /* ============================================================
-   Profit Max brand CSS
+   PricePilot brand CSS
    Import in root.tsx via links export
    ============================================================ */
 
@@ -68,7 +68,7 @@
   width: 46px;
   height: 46px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--pm-forest-mid) 0%, var(--pm-forest-deep) 100%);
+  background: rgba(224,213,188,0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -95,6 +95,7 @@
 .pm-hero-nav {
   display: flex;
   margin-top: 10px;
+  margin-right: 134px;
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 
@@ -123,11 +124,30 @@
 .pm-banner {
   background: var(--pm-forest);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   padding: 0 32px;
   display: flex;
   align-items: center;
   height: 54px;
+}
+
+/* Podenco Labs ear — right side of collapsed banner, overflows top/bottom */
+.pm-banner-ear {
+  flex-shrink: 0;
+  margin-left: auto;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Podenco Labs ear — right side of full hero banner */
+.pm-hero-ear {
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  pointer-events: none;
 }
 
 .pm-banner-left {
@@ -142,7 +162,7 @@
   width: 30px;
   height: 30px;
   border-radius: 7px;
-  background: linear-gradient(135deg, var(--pm-forest-mid) 0%, var(--pm-forest-deep) 100%);
+  background: rgba(224,213,188,0.1);
   display: flex;
   align-items: center;
   justify-content: center;

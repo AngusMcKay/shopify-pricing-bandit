@@ -38,7 +38,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   console.log(
-    `[ProfitMax] Cancelling experiment for deleted product ${productGid} on ${shop}`,
+    `[PricePilot] Cancelling experiment for deleted product ${productGid} on ${shop}`,
   );
 
   await db.experimentLive.updateMany({
@@ -65,7 +65,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { admin } = await unauthenticated.admin(shop);
     await syncExperimentMetafield(admin, shop);
   } catch (e) {
-    console.error("[ProfitMax] products/delete: metafield sync failed:", e);
+    console.error("[PricePilot] products/delete: metafield sync failed:", e);
   }
 
   return new Response(null, { status: 200 });

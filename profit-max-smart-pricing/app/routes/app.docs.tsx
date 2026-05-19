@@ -19,7 +19,7 @@ export default function DocsPage() {
       <s-section heading="On this page" slot="aside">
         <s-unordered-list>
           <s-list-item>
-            <s-link href="#how-it-works">How Profit Max works</s-link>
+            <s-link href="#how-it-works">How PricePilot works</s-link>
           </s-list-item>
           <s-list-item>
             <s-link href="#first-experiment">Setting up your first experiment</s-link>
@@ -36,7 +36,7 @@ export default function DocsPage() {
       {/* ------------------------------------------------------------------ */}
       {/* How it works                                                        */}
       {/* ------------------------------------------------------------------ */}
-      <s-section heading="How Profit Max works">
+      <s-section heading="How PricePilot works">
         <s-stack direction="block" gap="base">
           <s-heading>What is a multi-armed bandit?</s-heading>
           <s-paragraph>
@@ -47,7 +47,7 @@ export default function DocsPage() {
             seem to be paying well and less time on the ones that are not.
           </s-paragraph>
           <s-paragraph>
-            Profit Max does exactly this with your product prices. It tests several
+            PricePilot does exactly this with your product prices. It tests several
             price points simultaneously and continuously shifts more of your customers
             toward whichever prices are converting and generating revenue best — all
             in real time, with no manual work from you.
@@ -62,7 +62,7 @@ export default function DocsPage() {
             customers are seeing the worse price.
           </s-paragraph>
           <s-paragraph>
-            Profit Max takes a different approach. Instead of waiting for a winner,
+            PricePilot takes a different approach. Instead of waiting for a winner,
             it starts shifting traffic toward better prices immediately. A price point
             that is clearly underperforming gets less and less traffic over time,
             while top performers attract more. The result: you earn more revenue
@@ -77,7 +77,7 @@ export default function DocsPage() {
 
           <s-heading>Profit optimisation</s-heading>
           <s-paragraph>
-            By default, Profit Max optimises for revenue — the total value of sales
+            By default, PricePilot optimises for revenue — the total value of sales
             generated. If you provide a cost of production for a product, the
             algorithm shifts to optimising for profit instead. This means it will
             favour a price that maintains healthy margins over one that drives high
@@ -92,7 +92,7 @@ export default function DocsPage() {
           <s-paragraph>
             Customers in different countries often have different price expectations
             and sensitivities. When you enable regional variation for a product,
-            Profit Max runs separate optimisation for each of your active markets.
+            PricePilot runs separate optimisation for each of your active markets.
             The best price for the UK might be different from the best price for
             Australia — and this feature lets the algorithm find both independently.
           </s-paragraph>
@@ -354,7 +354,7 @@ export default function DocsPage() {
           <s-stack direction="block" gap="small-100">
             <s-heading>What happens to my existing product prices?</s-heading>
             <s-paragraph>
-              Your current Shopify prices are not permanently changed. Profit Max
+              Your current Shopify prices are not permanently changed. PricePilot
               dynamically adjusts the price shown to each visitor within your
               configured range. Your base price in Shopify remains unchanged as
               a reference point — it becomes the midpoint of your optimisation
@@ -369,7 +369,7 @@ export default function DocsPage() {
               Will this affect my sale prices or compare-at prices?
             </s-heading>
             <s-paragraph>
-              Profit Max only adjusts the selling price, not the compare-at
+              PricePilot only adjusts the selling price, not the compare-at
               price. If you run a sale where the compare-at price shows a
               discount, the algorithm will still test within your configured
               price range — but the discount amount shown to the customer
@@ -381,7 +381,7 @@ export default function DocsPage() {
 
           <s-stack direction="block" gap="small-100">
             <s-heading>
-              Does Profit Max work with Shopify Markets and multi-currency?
+              Does PricePilot work with Shopify Markets and multi-currency?
             </s-heading>
             <s-paragraph>
               Yes. When regional variation is enabled, the algorithm is
